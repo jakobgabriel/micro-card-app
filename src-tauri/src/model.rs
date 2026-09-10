@@ -1,8 +1,18 @@
 //! Core data model. A card is always backed by exactly one Markdown file,
 //! so everything here has to survive a round trip through the vault.
 
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Duration, SubsecRound, Utc};
 use serde::{Deserialize, Serialize};
+
+/// The current time, truncated to whole seconds.
+///
+/// Card timestamps are stored in the Markdown frontmatter with second
+/// precision. Truncating here means a card held in memory and the same card
+/// read back from disk compare equal, instead of differing by stray
+/// nanoseconds that were never written.
+pub fn now() -> DateTime<Utc> {
+    Utc::now().trunc_subsecs(0)
+}
 
 /// What kind of thing the user captured. This only drives presentation and
 /// whether the card takes part in review — the file format is identical.
@@ -65,7 +75,7 @@ pub struct Review {
 impl Default for Review {
     fn default() -> Self {
         Review {
-            due: Utc::now(),
+            due: now(),
             interval: 0.0,
             ease: 2.5,
             reps: 0,
@@ -117,7 +127,7 @@ impl Review {
         // Cap at ~1 year: beyond that the schedule stops being meaningful.
         next.interval = next.interval.min(365.0);
         let secs = (next.interval * 86_400.0).round() as i64;
-        next.due = now + Duration::seconds(secs.max(60));
+        next.due = (now + Duration::seconds(secs.max(60))).trunc_subsecs(0);
         next
     }
 }

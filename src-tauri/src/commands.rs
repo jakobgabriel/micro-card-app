@@ -9,7 +9,9 @@ use tauri::State;
 
 use crate::error::{Error, Result};
 use crate::markdown;
-use crate::model::{Card, CardDraft, CardKind, Grade, Review, Settings, Stats, VaultCandidate};
+use crate::model::{
+    self, Card, CardDraft, CardKind, Grade, Review, Settings, Stats, VaultCandidate,
+};
 use crate::state::AppState;
 use crate::vault::{self, Vault};
 
@@ -238,12 +240,18 @@ pub fn move_local_cards_to_vault(
 
 #[tauri::command]
 pub fn save_card(state: State<'_, AppState>, draft: CardDraft) -> Result<Card> {
+    save_draft(&state, draft)
+}
+
+/// The body of [`save_card`], callable without a Tauri handle so the whole
+/// capture path can be covered by tests.
+pub fn save_draft(state: &AppState, draft: CardDraft) -> Result<Card> {
     if draft.front.trim().is_empty() {
         return Err(Error::msg("A card needs some text."));
     }
     let settings = state.settings_snapshot();
     let vault = state.vault()?;
-    let now = Utc::now();
+    let now = model::now();
 
     let existing = draft
         .id
@@ -349,6 +357,10 @@ pub struct Deleted {
 
 #[tauri::command]
 pub fn delete_card(state: State<'_, AppState>, id: String) -> Result<Deleted> {
+    remove_card(&state, id)
+}
+
+pub fn remove_card(state: &AppState, id: String) -> Result<Deleted> {
     let card = state
         .cards_snapshot()
         .into_iter()
@@ -387,12 +399,16 @@ pub fn due_cards(state: State<'_, AppState>, limit: Option<usize>) -> Vec<Card> 
 
 #[tauri::command]
 pub fn grade_card(state: State<'_, AppState>, id: String, grade: Grade) -> Result<Card> {
+    apply_grade(&state, id, grade)
+}
+
+pub fn apply_grade(state: &AppState, id: String, grade: Grade) -> Result<Card> {
     let mut card = state
         .cards_snapshot()
         .into_iter()
         .find(|c| c.id == id)
         .ok_or(Error::NotFound(id))?;
-    let now = Utc::now();
+    let now = model::now();
     card.review = card.review.grade(grade, now);
     card.updated = now;
     state.vault()?.save(&mut card)?;
@@ -445,9 +461,134 @@ fn urlencode(input: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::vault::new_id;
 
     #[test]
     fn urlencodes_spaces_and_slashes_for_obsidian_links() {
         assert_eq!(urlencode("My Vault/Cards"), "My%20Vault%2FCards");
+    }
+
+    /// A state backed by a throwaway vault, standing in for a real install.
+    fn scratch_state() -> AppState {
+        let dir = std::env::temp_dir().join(format!("micro-card-cmd-{}", new_id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let state = AppState::load(dir);
+        state.refresh().unwrap();
+        state
+    }
+
+    fn draft(front: &str) -> CardDraft {
+        serde_json::from_value(serde_json::json!({ "front": front })).unwrap()
+    }
+
+    #[test]
+    fn a_bare_line_of_text_is_enough_to_make_a_card() {
+        let state = scratch_state();
+        let card = save_draft(&state, draft("Remember to water the plants")).unwrap();
+
+        assert_eq!(card.kind, CardKind::Note);
+        assert_eq!(card.title, "Remember to water the plants");
+        // The default tag is what makes cards findable in Obsidian search.
+        assert!(card.tags.contains(&"card".to_string()));
+        assert!(card.path.ends_with(".md"), "written to {}", card.path);
+        assert_eq!(state.cards_snapshot().len(), 1);
+        std::fs::remove_dir_all(&state.data_dir).ok();
+    }
+
+    #[test]
+    fn text_with_an_answer_becomes_a_reviewable_card() {
+        let state = scratch_state();
+        let mut d = draft("What is the capital of France?");
+        d.back = Some("Paris".into());
+        let card = save_draft(&state, d).unwrap();
+
+        assert_eq!(card.kind, CardKind::Qa);
+        assert!(
+            card.is_due(Utc::now()),
+            "a new Q & A card is due immediately"
+        );
+        assert_eq!(due_cards_from(&state).len(), 1);
+        std::fs::remove_dir_all(&state.data_dir).ok();
+    }
+
+    fn due_cards_from(state: &AppState) -> Vec<Card> {
+        let now = Utc::now();
+        state
+            .cards_snapshot()
+            .into_iter()
+            .filter(|c| c.is_due(now))
+            .collect()
+    }
+
+    #[test]
+    fn grading_a_card_pushes_it_out_of_the_queue_and_survives_a_rescan() {
+        let state = scratch_state();
+        let mut d = draft("2 + 2?");
+        d.back = Some("4".into());
+        let card = save_draft(&state, d).unwrap();
+
+        let graded = apply_grade(&state, card.id.clone(), Grade::Good).unwrap();
+        assert_eq!(graded.review.reps, 1);
+        assert!(!graded.is_due(Utc::now()));
+        assert!(due_cards_from(&state).is_empty());
+
+        // The schedule lives in the file, not in memory.
+        state.refresh().unwrap();
+        let reloaded = state
+            .cards_snapshot()
+            .into_iter()
+            .find(|c| c.id == card.id)
+            .expect("card still in the vault");
+        assert_eq!(reloaded.review.reps, 1);
+        std::fs::remove_dir_all(&state.data_dir).ok();
+    }
+
+    #[test]
+    fn editing_a_card_keeps_its_identity_and_creation_date() {
+        let state = scratch_state();
+        let card = save_draft(&state, draft("First wording")).unwrap();
+
+        let edit: CardDraft = serde_json::from_value(serde_json::json!({
+            "id": card.id,
+            "front": "Second wording",
+        }))
+        .unwrap();
+        let updated = save_draft(&state, edit).unwrap();
+
+        assert_eq!(updated.id, card.id);
+        assert_eq!(updated.created, card.created);
+        assert_eq!(updated.title, "Second wording");
+        assert_eq!(
+            state.cards_snapshot().len(),
+            1,
+            "editing must not duplicate"
+        );
+        std::fs::remove_dir_all(&state.data_dir).ok();
+    }
+
+    #[test]
+    fn deleting_a_card_can_be_undone() {
+        let state = scratch_state();
+        let card = save_draft(&state, draft("Regrettable deletion")).unwrap();
+
+        let deleted = remove_card(&state, card.id.clone()).unwrap();
+        assert!(state.cards_snapshot().is_empty());
+
+        state
+            .vault()
+            .unwrap()
+            .restore(&deleted.trashed_path)
+            .unwrap();
+        state.refresh().unwrap();
+        assert_eq!(state.cards_snapshot().len(), 1);
+        std::fs::remove_dir_all(&state.data_dir).ok();
+    }
+
+    #[test]
+    fn an_empty_card_is_refused_with_a_sentence_a_user_can_read() {
+        let state = scratch_state();
+        let err = save_draft(&state, draft("   ")).unwrap_err();
+        assert_eq!(err.to_string(), "A card needs some text.");
+        std::fs::remove_dir_all(&state.data_dir).ok();
     }
 }
