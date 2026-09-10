@@ -1,0 +1,19 @@
+node_modules
+dist
+dist-ssr
+*.local
+.DS_Store
+.env
+.vscode/*
+!.vscode/extensions.json
+
+# Rust / Tauri
+src-tauri/target
+src-tauri/gen/android
+src-tauri/gen/apple
+src-tauri/gen/schemas
+
+# Android signing
+*.keystore
+*.jks
+keystore.properties
