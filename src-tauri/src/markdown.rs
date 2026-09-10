@@ -221,19 +221,52 @@ fn leading_heading(body: &str) -> Option<String> {
     (!title.is_empty()).then(|| title.to_string())
 }
 
+/// Remove inline `#tags` from a line. Used for titles: a tag is metadata, and
+/// letting it leak into the file name produces things like
+/// "Atomic notes beat long documents method".
+fn strip_inline_tags(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut rest = line;
+    while let Some(idx) = rest.find('#') {
+        let (before, tail) = rest.split_at(idx);
+        let at_boundary = before.is_empty() || before.ends_with(char::is_whitespace);
+        let tag_len = tail[1..]
+            .find(|c: char| !(c.is_alphanumeric() || c == '-' || c == '_' || c == '/'))
+            .unwrap_or(tail.len() - 1);
+        let is_tag =
+            at_boundary && tag_len > 0 && tail[1..1 + tag_len].chars().any(|c| c.is_alphabetic());
+        out.push_str(before);
+        if is_tag {
+            rest = &tail[1 + tag_len..];
+        } else {
+            out.push('#');
+            rest = &tail[1..];
+        }
+    }
+    out.push_str(rest);
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 /// Derive a display title from arbitrary text: first non-empty line, stripped
-/// of Markdown noise, capped so it still works as a file name.
+/// of Markdown noise and inline tags, capped so it still works as a file name.
 pub fn title_from_text(text: &str) -> String {
     let line = text
         .lines()
         .map(str::trim)
         .find(|l| !l.is_empty())
         .unwrap_or("");
+    // `# ` starts a heading; `#todo` is a tag, and stripping the hash here
+    // would turn a tag-only card into a card titled "todo".
+    let line = match line.trim_start_matches('#') {
+        rest if rest.starts_with(' ') || rest.is_empty() => rest,
+        _ => line,
+    };
     let line = line
-        .trim_start_matches('#')
         .trim_start_matches('>')
         .trim_start_matches(['-', '*', '+'])
         .trim();
+    let stripped = strip_inline_tags(line);
+    let line = stripped.trim();
     let mut title: String = line.chars().take(60).collect();
     if line.chars().count() > 60 {
         // Cut at the last word boundary so the title does not end mid-word.
@@ -486,6 +519,19 @@ mod tests {
             wikilinks("see [[Wave|waves]] and [[Optics]]"),
             vec!["Wave", "Optics"]
         );
+    }
+
+    #[test]
+    fn tags_do_not_leak_into_the_title_or_file_name() {
+        assert_eq!(
+            title_from_text("Atomic notes beat long documents #method"),
+            "Atomic notes beat long documents"
+        );
+        // A hash that is not a tag is part of the text.
+        assert_eq!(title_from_text("Issue #42 is fixed"), "Issue #42 is fixed");
+        assert_eq!(title_from_text("C# is a language"), "C# is a language");
+        // A card that is nothing but tags still needs a name.
+        assert_eq!(title_from_text("#todo"), "Untitled card");
     }
 
     #[test]

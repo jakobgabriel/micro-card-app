@@ -134,13 +134,20 @@ function save(state: DemoState) {
   }
 }
 
+/** Mirrors `title_from_text` in `src-tauri/src/markdown.rs`. */
 function titleFromText(text: string): string {
   const line =
     text
       .split("\n")
       .map((l) => l.trim())
       .find(Boolean) ?? "";
-  const cleaned = line.replace(/^[#>*\-+\s]+/, "").trim();
+  const cleaned = line
+    // `# ` is a heading marker; `#tag` is metadata and must not become a title.
+    .replace(/^#+\s+/, "")
+    .replace(/^[>*\-+\s]+/, "")
+    .replace(/(^|\s)#[\w/-]*[a-zA-Z][\w/-]*/g, "$1")
+    .replace(/\s+/g, " ")
+    .trim();
   if (!cleaned) return "Untitled card";
   return cleaned.length > 60 ? `${cleaned.slice(0, 60).trimEnd()}…` : cleaned;
 }
