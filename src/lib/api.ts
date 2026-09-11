@@ -19,11 +19,15 @@ import type {
   Library,
   RepoInfo,
   Review,
+  ExportFormat,
+  MergeResult,
   SessionRequest,
   Settings,
   SettingsPatch,
+  SharedText,
   Similar,
   SyncReport,
+  TrashedCard,
   VaultCandidate,
 } from "./types";
 
@@ -90,6 +94,24 @@ export const api = {
     call<void>("write_text_file", { path, contents }),
   readTextFile: (path: string) => call<string>("read_text_file", { path }),
   addSampleCards: () => call<Library>("add_sample_cards"),
+
+  // Trash
+  listTrash: () => call<TrashedCard[]>("list_trash"),
+  deleteForever: (path: string) => call<TrashedCard[]>("delete_forever", { path }),
+  emptyTrash: () => call<number>("empty_trash"),
+
+  // Text shared in from another app
+  takeSharedText: () => call<SharedText | null>("take_shared_text"),
+
+  // Export in the format the destination understands
+  exportCards: (format: ExportFormat) => call<string>("export_cards", { format }),
+
+  // Merge duplicates
+  mergeCards: (keep: string, merge: string[]) =>
+    call<MergeResult>("merge_cards", { keep, merge }),
+
+  // A card worth seeing again
+  resurfacedCard: () => call<Card | null>("resurfaced_card"),
 };
 
 /** Human-readable message for anything thrown by a command. */

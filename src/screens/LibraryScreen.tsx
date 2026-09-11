@@ -47,7 +47,7 @@ export function LibraryScreen({
   /** Lets the shell hide the capture button while cards are being selected. */
   onSelectionChange?: (active: boolean) => void;
 }) {
-  const { library, deleteCards, bulkEdit } = useStore();
+  const { library, deleteCards, deleteCard, bulkEdit, starCard } = useStore();
   const toast = useToast();
   const [query, setQuery] = useState(initialQuery ?? "");
   const [filter, setFilter] = useState<Filter>("all");
@@ -100,6 +100,29 @@ export function LibraryScreen({
     try {
       const { undo } = await deleteCards(ids);
       toast.success(`${ids.length} card${ids.length === 1 ? "" : "s"} moved to trash`, {
+        label: "Undo",
+        run: () => void undo(),
+      });
+    } catch (err) {
+      toast.error(errorMessage(err));
+    }
+  };
+
+  /** Swipe right: star or unstar without opening the card. */
+  const toggleStar = async (card: Card) => {
+    try {
+      await starCard(card, !card.starred);
+      toast.success(card.starred ? "Star removed" : "Starred");
+    } catch (err) {
+      toast.error(errorMessage(err));
+    }
+  };
+
+  /** Swipe left: delete, with the usual undo. */
+  const removeOne = async (card: Card) => {
+    try {
+      const { undo } = await deleteCard(card.id);
+      toast.success(`“${card.title}” moved to trash`, {
         label: "Undo",
         run: () => void undo(),
       });
@@ -234,7 +257,7 @@ export function LibraryScreen({
           <>
             <p className="px-1 pb-1 text-xs font-medium text-muted">
               {visible.length} card{visible.length === 1 ? "" : "s"}
-              {!selecting && visible.length > 1 && " · hold one to select"}
+              {!selecting && visible.length > 1 && " · swipe to star or delete, hold to select"}
             </p>
             {visible.map((card) => (
               <div
@@ -259,6 +282,8 @@ export function LibraryScreen({
                   card={card}
                   selected={selecting ? selected.includes(card.id) : undefined}
                   onOpen={selecting ? () => toggle(card.id) : onOpenCard}
+                  onStar={(target) => void toggleStar(target)}
+                  onDelete={(target) => void removeOne(target)}
                 />
               </div>
             ))}

@@ -14,6 +14,7 @@ import {
   Bold,
   BookOpen,
   Code,
+  Combine,
   Hash,
   Heading,
   Italic,
@@ -29,11 +30,9 @@ import {
 import { Sheet } from "./Sheet";
 import { Button, Chip, SegmentedControl } from "./ui";
 import { useToast } from "./Toast";
-import { errorMessage } from "@/lib/api";
+import { api, errorMessage } from "@/lib/api";
 import { useStore } from "@/lib/store";
-import type { Card, CardKind } from "@/lib/types";
-import { api } from "@/lib/api";
-import type { Similar } from "@/lib/types";
+import type { Card, CardKind, Similar } from "@/lib/types";
 import { cn, extractInlineTags, prefixLines, wrapSelection } from "@/lib/utils";
 
 const DRAFT_KEY = "micro-card-draft-v1";
@@ -59,10 +58,12 @@ interface CaptureSheetProps {
   onClose: () => void;
   /** Editing an existing card instead of capturing a new one. */
   editing?: Card | null;
+  /** Text handed in from elsewhere — the Android share sheet, usually. */
+  initialText?: string;
 }
 
-export function CaptureSheet({ open, onClose, editing }: CaptureSheetProps) {
-  const { library, saveCard } = useStore();
+export function CaptureSheet({ open, onClose, editing, initialText }: CaptureSheetProps) {
+  const { library, saveCard, mergeCards } = useStore();
   const toast = useToast();
   const textRef = useRef<HTMLTextAreaElement>(null);
   const backRef = useRef<HTMLTextAreaElement>(null);
@@ -77,6 +78,7 @@ export function CaptureSheet({ open, onClose, editing }: CaptureSheetProps) {
   const [showExtras, setShowExtras] = useState(false);
   const [saving, setSaving] = useState(false);
   const [similar, setSimilar] = useState<Similar[]>([]);
+  const [merging, setMerging] = useState(false);
 
   const decks = useMemo(
     () =>
@@ -92,9 +94,19 @@ export function CaptureSheet({ open, onClose, editing }: CaptureSheetProps) {
     [library],
   );
 
-  // Load either the card being edited or an unsaved draft.
+  // Load the card being edited, text shared in from another app, or an
+  // unsaved draft — in that order of precedence.
   useEffect(() => {
     if (!open) return;
+    if (initialText !== undefined && !editing) {
+      setKind("note");
+      setFront(initialText);
+      setBack("");
+      setDeck("");
+      setTags([]);
+      setShowExtras(false);
+      return;
+    }
     if (editing) {
       setKind(editing.kind);
       setFront(editing.front);
@@ -124,11 +136,11 @@ export function CaptureSheet({ open, onClose, editing }: CaptureSheetProps) {
     setDeck("");
     setTags([]);
     setShowExtras(false);
-  }, [open, editing, library?.settings.default_tag]);
+  }, [open, editing, initialText, library?.settings.default_tag]);
 
   // Keep the draft warm while typing so nothing is ever lost.
   useEffect(() => {
-    if (!open || editing) return;
+    if (!open || editing || initialText !== undefined) return;
     const id = setTimeout(() => {
       try {
         if (front.trim() || back.trim()) {
@@ -141,7 +153,7 @@ export function CaptureSheet({ open, onClose, editing }: CaptureSheetProps) {
       }
     }, 400);
     return () => clearTimeout(id);
-  }, [open, editing, kind, front, back, deck, tags]);
+  }, [open, editing, initialText, kind, front, back, deck, tags]);
 
   useEffect(() => {
     if (!open) return;
@@ -201,6 +213,31 @@ export function CaptureSheet({ open, onClose, editing }: CaptureSheetProps) {
     if (!tag) return;
     setTags((current) => (current.includes(tag) ? current : [...current, tag]));
     setTagDraft("");
+  };
+
+  /**
+   * Fold the look-alikes into the card being edited. Only offered while
+   * editing: merging something that has not been saved yet would mean saving
+   * it first, which is a surprising thing for a button to do.
+   */
+  const mergeWithSimilar = async () => {
+    if (!editing) return;
+    setMerging(true);
+    try {
+      const { undo } = await mergeCards(
+        editing.id,
+        similar.map((hit) => hit.id),
+      );
+      toast.success(
+        `Merged ${similar.length} card${similar.length === 1 ? "" : "s"} in`,
+        { label: "Undo", run: () => void undo() },
+      );
+      onClose();
+    } catch (err) {
+      toast.error(errorMessage(err));
+    } finally {
+      setMerging(false);
+    }
   };
 
   const submit = async (keepOpen: boolean) => {
@@ -403,18 +440,32 @@ export function CaptureSheet({ open, onClose, editing }: CaptureSheetProps) {
       )}
 
       {similar.length > 0 && (
-        <div className="mt-4 flex gap-3 rounded-2xl border border-warn/40 bg-warn/10 p-3.5 animate-fade-in">
-          <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-warn" />
-          <div className="min-w-0 text-sm">
-            <p className="font-semibold">You may already have this</p>
-            <ul className="mt-1 space-y-0.5 text-muted">
-              {similar.map((hit) => (
-                <li key={hit.id} className="truncate">
-                  {hit.title}
-                </li>
-              ))}
-            </ul>
+        <div className="mt-4 rounded-2xl border border-warn/40 bg-warn/10 p-3.5 animate-fade-in">
+          <div className="flex gap-3">
+            <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-warn" />
+            <div className="min-w-0 text-sm">
+              <p className="font-semibold">You may already have this</p>
+              <ul className="mt-1 space-y-0.5 text-muted">
+                {similar.map((hit) => (
+                  <li key={hit.id} className="truncate">
+                    {hit.title}
+                  </li>
+                ))}
+              </ul>
+            </div>
           </div>
+          {editing && (
+            <Button
+              variant="secondary"
+              size="sm"
+              className="mt-3 w-full"
+              loading={merging}
+              onClick={() => void mergeWithSimilar()}
+              icon={<Combine className="h-4 w-4" />}
+            >
+              Merge into one card
+            </Button>
+          )}
         </div>
       )}
 

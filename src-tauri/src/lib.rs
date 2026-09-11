@@ -63,6 +63,13 @@ pub fn run() {
             commands::write_text_file,
             commands::read_text_file,
             commands::add_sample_cards,
+            commands::list_trash,
+            commands::delete_forever,
+            commands::empty_trash,
+            commands::take_shared_text,
+            commands::export_cards,
+            commands::merge_cards,
+            commands::resurfaced_card,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Micro Card");

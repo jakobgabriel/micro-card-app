@@ -8,6 +8,7 @@ import type {
   Card,
   CardDraft,
   Deleted,
+  TrashedCard,
   Grade,
   Library,
   Settings,
@@ -27,6 +28,7 @@ interface DemoState {
   reviewedToday: number;
   day: string;
   lastSynced?: string;
+  trash?: TrashedCard[];
 }
 
 const defaultSettings: Settings = {
@@ -344,6 +346,18 @@ export async function demoInvoke<T>(
       const id = args?.id as string;
       const card = state.cards.find((c) => c.id === id);
       state.cards = state.cards.filter((c) => c.id !== id);
+      if (card) {
+        state.trash = [
+          {
+            path: `.trash/${card.title}.md`,
+            title: card.title,
+            kind: card.kind,
+            preview: card.front.slice(0, 160),
+            deleted_at: new Date().toISOString(),
+          },
+          ...(state.trash ?? []),
+        ];
+      }
       return done({
         id,
         trashed_path: card?.path ?? "",
@@ -601,6 +615,90 @@ export async function demoInvoke<T>(
     case "add_sample_cards": {
       state.cards = [...seedCards(), ...state.cards];
       return done(library(state)) as Promise<T>;
+    }
+
+    case "list_trash":
+      return done(state.trash ?? []) as Promise<T>;
+
+    case "delete_forever": {
+      const path = args?.path as string;
+      state.trash = (state.trash ?? []).filter((t) => t.path !== path);
+      return done(state.trash) as Promise<T>;
+    }
+
+    case "empty_trash": {
+      const count = (state.trash ?? []).length;
+      state.trash = [];
+      return done(count) as Promise<T>;
+    }
+
+    case "take_shared_text":
+      // A browser preview has no share sheet to receive from.
+      return done(null) as Promise<T>;
+
+    case "export_cards": {
+      const format = args?.format as string;
+      if (format === "json") return done(JSON.stringify(state.cards, null, 2)) as Promise<T>;
+      if (format === "csv") {
+        const quote = (v: string) => `"${v.replace(/"/g, '""')}"`;
+        return done(
+          `front,back,tags\n${state.cards
+            .map((c) => [quote(c.front), quote(c.back), quote(c.tags.join(" "))].join(","))
+            .join("\n")}\n`,
+        ) as Promise<T>;
+      }
+      return done(
+        `# Micro Card export\n\n${state.cards
+          .map((c) => `### ${c.title}\n\n${c.front}`)
+          .join("\n\n")}\n`,
+      ) as Promise<T>;
+    }
+
+    case "merge_cards": {
+      const keep = args?.keep as string;
+      const merge = args?.merge as string[];
+      const keeper = state.cards.find((c) => c.id === keep);
+      if (!keeper) throw new Error("Card not found");
+      const others = state.cards.filter((c) => merge.includes(c.id) && c.id !== keep);
+      const merged: Card = { ...keeper };
+      for (const other of others) {
+        for (const tag of other.tags) if (!merged.tags.includes(tag)) merged.tags.push(tag);
+        if (other.front.trim() && !merged.front.includes(other.front.trim())) {
+          merged.front = `${merged.front.trim()}\n\n${other.front.trim()}`;
+        }
+        if (other.back.trim() && !merged.back.includes(other.back.trim())) {
+          merged.back = merged.back.trim()
+            ? `${merged.back.trim()}\n\n${other.back.trim()}`
+            : other.back.trim();
+        }
+        merged.starred = merged.starred || other.starred;
+      }
+      merged.updated = new Date().toISOString();
+      state.trash = [
+        ...others.map((o) => ({
+          path: `.trash/${o.title}.md`,
+          title: o.title,
+          kind: o.kind,
+          preview: o.front.slice(0, 160),
+          deleted_at: new Date().toISOString(),
+        })),
+        ...(state.trash ?? []),
+      ];
+      state.cards = state.cards
+        .filter((c) => !merge.includes(c.id) || c.id === keep)
+        .map((c) => (c.id === keep ? merged : c));
+      return done({
+        card: merged,
+        trashed: others.map((o) => ({ id: o.id, trashed_path: `.trash/${o.title}.md` })),
+      }) as Promise<T>;
+    }
+
+    case "resurfaced_card": {
+      const now = Date.now();
+      const older = state.cards.filter(
+        (c) => now - new Date(c.updated).getTime() >= 86_400_000,
+      );
+      return done(older.length > 0 ? older[0] : null) as Promise<T>;
     }
 
     default:

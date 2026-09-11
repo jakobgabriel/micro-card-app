@@ -12,7 +12,7 @@ use walkdir::WalkDir;
 
 use crate::error::{Error, Result};
 use crate::markdown;
-use crate::model::{Card, VaultCandidate};
+use crate::model::{Card, TrashedCard, VaultCandidate};
 
 /// Folders that never contain user cards.
 const SKIP_DIRS: &[&str] = &[
@@ -276,6 +276,72 @@ impl Vault {
             fs::remove_file(&src)?;
         }
         Ok(self.rel(&dest))
+    }
+
+    /// Everything sitting in the vault's `.trash`, newest first. Parsed just
+    /// enough to show a title and a date — a trashed card is not a live card.
+    pub fn list_trash(&self) -> Result<Vec<TrashedCard>> {
+        let dir = self.root.join(".trash");
+        if !dir.exists() {
+            return Ok(Vec::new());
+        }
+        let mut out = Vec::new();
+        for entry in fs::read_dir(&dir)?.filter_map(|e| e.ok()) {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("md") {
+                continue;
+            }
+            let Ok(content) = fs::read_to_string(&path) else {
+                continue;
+            };
+            let stem = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("Untitled");
+            let deleted = file_time(&path).unwrap_or_else(Utc::now);
+            let parsed = markdown::parse(&content, &self.rel(&path), stem, deleted);
+            out.push(TrashedCard {
+                path: self.rel(&path),
+                title: parsed.card.title,
+                kind: parsed.card.kind,
+                preview: parsed.card.front.chars().take(160).collect(),
+                deleted_at: deleted,
+            });
+        }
+        out.sort_by(|a, b| b.deleted_at.cmp(&a.deleted_at));
+        Ok(out)
+    }
+
+    /// Remove one trashed file for good.
+    pub fn delete_forever(&self, trashed_rel: &str) -> Result<()> {
+        // Refuse anything that is not inside `.trash`: this is the one
+        // operation with no undo, so it must not be reachable for a live card.
+        if !trashed_rel.replace('\\', "/").starts_with(".trash/") {
+            return Err(Error::msg("Only trashed cards can be deleted for good."));
+        }
+        let path = self.root.join(trashed_rel);
+        if path.exists() {
+            fs::remove_file(path)?;
+        }
+        Ok(())
+    }
+
+    /// Empty the whole trash. Returns how many files went.
+    pub fn empty_trash(&self) -> Result<usize> {
+        let dir = self.root.join(".trash");
+        if !dir.exists() {
+            return Ok(0);
+        }
+        let mut removed = 0;
+        for entry in fs::read_dir(&dir)?.filter_map(|e| e.ok()) {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) == Some("md")
+                && fs::remove_file(&path).is_ok()
+            {
+                removed += 1;
+            }
+        }
+        Ok(removed)
     }
 
     /// Is this folder writable? Checked before onboarding finishes so the user

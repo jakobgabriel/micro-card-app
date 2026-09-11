@@ -277,6 +277,17 @@ impl Default for Settings {
     }
 }
 
+/// A card in the vault's `.trash`, waiting to be restored or forgotten.
+#[derive(Debug, Clone, Serialize)]
+pub struct TrashedCard {
+    /// Path relative to the vault root, always inside `.trash`.
+    pub path: String,
+    pub title: String,
+    pub kind: CardKind,
+    pub preview: String,
+    pub deleted_at: DateTime<Utc>,
+}
+
 /// A candidate Obsidian vault found on the device.
 #[derive(Debug, Clone, Serialize)]
 pub struct VaultCandidate {

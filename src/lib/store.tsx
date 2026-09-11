@@ -48,6 +48,8 @@ interface StoreValue {
   moveLocalCardsToVault: (path: string, folder?: string) => Promise<void>;
   useLocalVault: () => Promise<void>;
   addSampleCards: () => Promise<void>;
+  starCard: (card: Card, starred: boolean) => Promise<void>;
+  mergeCards: (keep: string, merge: string[]) => Promise<{ undo: () => Promise<void> }>;
   /** Run a sync. `quiet` is used by the automatic ones, which stay silent. */
   sync: (quiet?: boolean) => Promise<SyncReport | null>;
   refreshGithub: () => Promise<void>;
@@ -252,6 +254,29 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       addSampleCards: async () => {
         setLibrary(await api.addSampleCards());
         scheduleAutoSync();
+      },
+      starCard: async (card, starred) => {
+        await api.saveCard({
+          id: card.id,
+          front: card.front,
+          back: card.back,
+          starred,
+        });
+        await reload();
+        scheduleAutoSync();
+      },
+      mergeCards: async (keep, merge) => {
+        const result = await api.mergeCards(keep, merge);
+        await reload();
+        scheduleAutoSync();
+        return {
+          undo: async () => {
+            // Putting the absorbed cards back leaves the keeper holding the
+            // merged text, which is the honest state to undo into.
+            setLibrary(await api.restoreMany(result.trashed.map((t) => t.trashed_path)));
+            scheduleAutoSync();
+          },
+        };
       },
     }),
     [

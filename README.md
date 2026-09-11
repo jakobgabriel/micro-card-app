@@ -32,8 +32,11 @@ on your phone until you decide otherwise.
 | **Spaced repetition** | Q & A cards come back when you are about to forget them. Three grades, each showing when the card returns — and an undo for the mis-tap. |
 | **Study what you choose** | Review everything due, or one deck or tag — including cards that are not due yet, for the night before an exam. |
 | **Find things again** | Search with `#tags` and `deck:name`, browse decks and tags, rename either everywhere at once, follow `[[wikilinks]]`, and see what links back. |
-| **Bulk tidying** | Hold a card to start selecting, then tag, star or delete a whole batch — with one undo for the batch. |
-| **Progress you can see** | A twelve-week activity grid, a two-week forecast of what falls due, and an optional daily reminder. |
+| **Share into it** | "Share → Micro Card" from any Android app drops the text straight into the editor, with the page title as the first line. |
+| **Bulk tidying** | Swipe a card to star or delete it, or hold one to select a batch and tag, star or delete the lot — with one undo for the batch. |
+| **Nothing is final** | Deleted cards wait in *Recently deleted* until you empty the trash, and near-duplicates can be merged into one card rather than hunted down later. |
+| **Progress you can see** | A twelve-week activity grid, a two-week forecast of what falls due, a card resurfaced each day, and an optional daily reminder. |
+| **Take it elsewhere** | Export as a readable Markdown document, a CSV that Anki imports, or JSON with the review schedules intact. |
 | **Nothing to lose** | Drafts survive a crash, deletes are undoable and land in the vault's `.trash`, near-duplicates are flagged before you save, and frontmatter written by other plugins is preserved. |
 | **Works before setup** | No vault, no repo, no account? Start capturing anyway. Connect either later and every card moves across. |
 | **Readable for everyone** | Green light and dark themes that follow the system, and a text-size setting that scales the whole interface. |
@@ -58,7 +61,9 @@ rename — so a half-written card can never reach your vault.
 
 See [`docs/card-format.md`](docs/card-format.md) for the file format,
 [`docs/obsidian-sync.md`](docs/obsidian-sync.md) for the file-level behaviour,
-and [`docs/github-sync.md`](docs/github-sync.md) for the repository sync.
+[`docs/github-sync.md`](docs/github-sync.md) for the repository sync, and
+[`docs/sharing-and-trash.md`](docs/sharing-and-trash.md) for the Android share
+target, the trash and merging duplicates.
 
 ## Sync with a GitHub repository
 
@@ -110,8 +115,9 @@ npm run android:build  # release APK
 
 `src-tauri/gen/android` is generated, not committed. `scripts/patch-android.mjs`
 adds what the template does not: storage permissions for reading a vault outside
-the app sandbox, legacy external storage for Android 10, and `adjustResize` so
-the keyboard never covers the editor. Re-run it after any `android init`.
+the app sandbox, legacy external storage for Android 10, `adjustResize` so the
+keyboard never covers the editor, and the share-target intent filter plus the
+`MainActivity` that receives shared text. Re-run it after any `android init`.
 
 The `Android APK` workflow builds a debug APK on demand or on a `v*` tag.
 
@@ -150,7 +156,7 @@ src-tauri/src/           Rust core
 
 ```sh
 npm run build                         # typecheck + production bundle
-cd src-tauri && cargo test            # 50 tests, no network required
+cd src-tauri && cargo test            # 59 tests, no network required
 cd src-tauri && cargo clippy --all-targets -- -D warnings
 ```
 

@@ -11,7 +11,8 @@ use crate::error::{Error, Result};
 use crate::github::{GitHub, RepoConfig, RepoInfo};
 use crate::markdown;
 use crate::model::{
-    self, Card, CardDraft, CardKind, Grade, Review, Settings, Stats, Theme, VaultCandidate,
+    self, Card, CardDraft, CardKind, Grade, Review, Settings, Stats, Theme, TrashedCard,
+    VaultCandidate,
 };
 use crate::state::AppState;
 use crate::sync::{self, SyncReport};
@@ -737,6 +738,145 @@ mod tests {
     }
 
     #[test]
+    fn merging_combines_tags_and_text_and_trashes_the_absorbed_cards() {
+        let state = scratch_state();
+        let mut first = draft("Spaced repetition works");
+        first.tags = Some(vec!["memory".into()]);
+        let keeper = save_draft(&state, first).unwrap();
+
+        let mut second = draft("Reviews should get further apart each time");
+        second.tags = Some(vec!["method".into()]);
+        let other = save_draft(&state, second).unwrap();
+
+        let result = merge_inner(&state, keeper.id.clone(), vec![other.id.clone()]).unwrap();
+
+        assert!(result.card.front.contains("Spaced repetition works"));
+        assert!(result.card.front.contains("further apart"));
+        assert!(result.card.tags.iter().any(|t| t == "memory"));
+        assert!(result.card.tags.iter().any(|t| t == "method"));
+        assert_eq!(result.trashed.len(), 1);
+        assert_eq!(state.cards_snapshot().len(), 1, "the absorbed card is gone");
+        // Trashed, not destroyed: the merge is undoable.
+        assert_eq!(state.vault().unwrap().list_trash().unwrap().len(), 1);
+        std::fs::remove_dir_all(&state.data_dir).ok();
+    }
+
+    #[test]
+    fn merging_identical_cards_does_not_say_everything_twice() {
+        let state = scratch_state();
+        let keeper = save_draft(&state, draft("The very same sentence")).unwrap();
+        let twin = save_draft(&state, draft("The very same sentence")).unwrap();
+
+        let result = merge_inner(&state, keeper.id.clone(), vec![twin.id]).unwrap();
+
+        assert_eq!(result.card.front, "The very same sentence");
+        std::fs::remove_dir_all(&state.data_dir).ok();
+    }
+
+    #[test]
+    fn trashed_cards_can_be_listed_and_then_destroyed() {
+        let state = scratch_state();
+        let card = save_draft(&state, draft("Destined for the bin")).unwrap();
+        remove_card(&state, card.id).unwrap();
+
+        let vault = state.vault().unwrap();
+        let trash = vault.list_trash().unwrap();
+        assert_eq!(trash.len(), 1);
+        assert_eq!(trash[0].title, "Destined for the bin");
+        assert!(trash[0].path.starts_with(".trash/"));
+
+        vault.delete_forever(&trash[0].path).unwrap();
+        assert!(vault.list_trash().unwrap().is_empty());
+        std::fs::remove_dir_all(&state.data_dir).ok();
+    }
+
+    #[test]
+    fn a_live_card_can_never_be_destroyed_by_the_trash_command() {
+        let state = scratch_state();
+        let card = save_draft(&state, draft("Very much alive")).unwrap();
+
+        let err = state
+            .vault()
+            .unwrap()
+            .delete_forever(&card.path)
+            .unwrap_err();
+
+        assert!(err.to_string().contains("Only trashed cards"));
+        assert_eq!(state.vault().unwrap().scan().unwrap().len(), 1);
+        std::fs::remove_dir_all(&state.data_dir).ok();
+    }
+
+    #[test]
+    fn exported_csv_quotes_commas_and_quotes_the_way_anki_expects() {
+        assert_eq!(csv_field("plain"), "\"plain\"");
+        assert_eq!(csv_field("with, comma"), "\"with, comma\"");
+        assert_eq!(csv_field("he said \"hi\""), "\"he said \"\"hi\"\"\"");
+    }
+
+    #[test]
+    fn exported_csv_has_a_header_and_one_row_per_card() {
+        let state = scratch_state();
+        let mut d = draft("Bonjour");
+        d.back = Some("Hello".into());
+        d.tags = Some(vec!["french".into()]);
+        save_draft(&state, d).unwrap();
+
+        let csv = export_csv(&state.cards_snapshot());
+        let lines: Vec<&str> = csv.lines().collect();
+
+        assert_eq!(lines[0], "front,back,tags");
+        assert!(
+            lines[1].starts_with("\"Bonjour\",\"Hello\""),
+            "{}",
+            lines[1]
+        );
+        assert!(lines[1].contains("french"));
+        std::fs::remove_dir_all(&state.data_dir).ok();
+    }
+
+    #[test]
+    fn shared_text_is_read_once_and_then_cleared() {
+        let state = scratch_state();
+        let path = state.data_dir.join("shared-capture.json");
+        std::fs::write(
+            &path,
+            r#"{"text":"Something worth keeping","subject":"An article"}"#,
+        )
+        .unwrap();
+
+        let shared = take_shared_inner(&state).expect("the shared text should arrive");
+        assert_eq!(shared.text, "Something worth keeping");
+        assert_eq!(shared.subject.as_deref(), Some("An article"));
+
+        // Reading it must consume it, or the same text is captured twice.
+        assert!(!path.exists());
+        assert!(take_shared_inner(&state).is_none());
+        std::fs::remove_dir_all(&state.data_dir).ok();
+    }
+
+    #[test]
+    fn the_shared_file_is_looked_for_where_android_actually_writes_it() {
+        let paths = shared_capture_paths(std::path::Path::new("/data/user/0/app/files"));
+        assert!(paths
+            .iter()
+            .any(|p| p.ends_with("files/shared-capture.json")));
+        assert!(paths
+            .iter()
+            .any(|p| p.ends_with("0/app/shared-capture.json")));
+    }
+
+    #[test]
+    fn resurfacing_skips_fresh_cards_and_anything_already_due() {
+        let state = scratch_state();
+        save_draft(&state, draft("Captured just now")).unwrap();
+        assert!(
+            resurface_inner(&state).is_none(),
+            "a card written moments ago is not a rediscovery"
+        );
+        std::fs::remove_dir_all(&state.data_dir).ok();
+    }
+
+    #[test]
     fn an_empty_card_is_refused_with_a_sentence_a_user_can_read() {
         let state = scratch_state();
         let err = save_draft(&state, draft("   ")).unwrap_err();
@@ -1351,7 +1491,10 @@ fn split_pair(line: &str) -> (String, String) {
 /// Everything, as one Markdown document that reads well on its own.
 #[tauri::command]
 pub fn export_markdown(state: State<'_, AppState>) -> String {
-    let cards = state.cards_snapshot();
+    export_markdown_text(&state.cards_snapshot())
+}
+
+fn export_markdown_text(cards: &[Card]) -> String {
     let mut out = String::from("# Micro Card export\n\n");
     out.push_str(&format!(
         "{} cards, exported {}\n\n",
@@ -1360,7 +1503,7 @@ pub fn export_markdown(state: State<'_, AppState>) -> String {
     ));
 
     let mut decks: std::collections::BTreeMap<String, Vec<&Card>> = Default::default();
-    for card in &cards {
+    for card in cards {
         decks
             .entry(card.deck.clone().unwrap_or_else(|| "Inbox".to_string()))
             .or_default()
@@ -1444,4 +1587,254 @@ pub fn add_sample_cards(state: State<'_, AppState>) -> Result<Library> {
     }
     state.refresh()?;
     library(&state)
+}
+
+// ---------------------------------------------------------------------------
+// Trash
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub fn list_trash(state: State<'_, AppState>) -> Result<Vec<TrashedCard>> {
+    state.vault()?.list_trash()
+}
+
+#[tauri::command]
+pub fn delete_forever(state: State<'_, AppState>, path: String) -> Result<Vec<TrashedCard>> {
+    let vault = state.vault()?;
+    vault.delete_forever(&path)?;
+    vault.list_trash()
+}
+
+#[tauri::command]
+pub fn empty_trash(state: State<'_, AppState>) -> Result<usize> {
+    state.vault()?.empty_trash()
+}
+
+// ---------------------------------------------------------------------------
+// Sharing into the app from elsewhere on the phone
+// ---------------------------------------------------------------------------
+
+/// Text handed over by another app through the Android share sheet.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SharedText {
+    #[serde(default)]
+    pub text: String,
+    /// The subject a browser or mail app sends alongside the text.
+    #[serde(default)]
+    pub subject: Option<String>,
+    #[serde(default)]
+    pub source: Option<String>,
+}
+
+/// Collect anything shared into the app and clear it, so the same text is
+/// never captured twice.
+///
+/// The Android activity writes `shared-capture.json` into the app's own files
+/// directory (see `scripts/patch-android.mjs`); this reads and removes it.
+#[tauri::command]
+pub fn take_shared_text(state: State<'_, AppState>) -> Option<SharedText> {
+    take_shared_inner(&state)
+}
+
+pub fn take_shared_inner(state: &AppState) -> Option<SharedText> {
+    for path in shared_capture_paths(&state.data_dir) {
+        let Ok(raw) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let _ = std::fs::remove_file(&path);
+        if let Ok(shared) = serde_json::from_str::<SharedText>(&raw) {
+            if !shared.text.trim().is_empty() {
+                return Some(shared);
+            }
+        }
+    }
+    None
+}
+
+/// Where the Android side may have left the shared text.
+///
+/// Tauri's app data directory and Android's `filesDir` are the same place in
+/// practice, but the mapping is not guaranteed across versions, so the
+/// neighbouring `files` directory is checked too rather than silently losing
+/// what somebody shared.
+fn shared_capture_paths(data_dir: &std::path::Path) -> Vec<PathBuf> {
+    const NAME: &str = "shared-capture.json";
+    let mut paths = vec![data_dir.join(NAME)];
+    if data_dir.file_name().and_then(|n| n.to_str()) == Some("files") {
+        if let Some(parent) = data_dir.parent() {
+            paths.push(parent.join(NAME));
+        }
+    } else {
+        paths.push(data_dir.join("files").join(NAME));
+    }
+    paths
+}
+
+// ---------------------------------------------------------------------------
+// Export
+// ---------------------------------------------------------------------------
+
+/// Everything, in the format the destination understands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ExportFormat {
+    /// One readable document, grouped by deck.
+    Markdown,
+    /// Two columns, ready for Anki's "Import file" dialog.
+    Csv,
+    /// Everything, including review state — the format to re-import from.
+    Json,
+}
+
+#[tauri::command]
+pub fn export_cards(state: State<'_, AppState>, format: ExportFormat) -> Result<String> {
+    let cards = state.cards_snapshot();
+    Ok(match format {
+        ExportFormat::Markdown => export_markdown_text(&cards),
+        ExportFormat::Csv => export_csv(&cards),
+        ExportFormat::Json => serde_json::to_string_pretty(&cards)
+            .map_err(|e| Error::msg(format!("Could not build the export: {e}")))?,
+    })
+}
+
+/// Anki reads a plain two-column file: front, back, then tags.
+fn export_csv(cards: &[Card]) -> String {
+    let mut out = String::from("front,back,tags\n");
+    for card in cards {
+        out.push_str(&format!(
+            "{},{},{}\n",
+            csv_field(&card.front),
+            csv_field(&card.back),
+            csv_field(&card.tags.join(" ")),
+        ));
+    }
+    out
+}
+
+/// Quote a field the way every spreadsheet expects: wrap it, and double any
+/// quotes inside.
+fn csv_field(value: &str) -> String {
+    format!("\"{}\"", value.replace('"', "\"\""))
+}
+
+// ---------------------------------------------------------------------------
+// Merging duplicates
+// ---------------------------------------------------------------------------
+
+/// Fold several cards into one: the keeper gets every tag, and any text the
+/// others had that it did not. The others go to the trash, so the merge can be
+/// undone card by card.
+#[tauri::command]
+pub fn merge_cards(
+    state: State<'_, AppState>,
+    keep: String,
+    merge: Vec<String>,
+) -> Result<MergeResult> {
+    merge_inner(&state, keep, merge)
+}
+
+pub fn merge_inner(state: &AppState, keep: String, merge: Vec<String>) -> Result<MergeResult> {
+    let cards = state.cards_snapshot();
+    let mut keeper = cards
+        .iter()
+        .find(|c| c.id == keep)
+        .cloned()
+        .ok_or_else(|| Error::NotFound(keep.clone()))?;
+    let others: Vec<Card> = cards
+        .into_iter()
+        .filter(|c| merge.contains(&c.id) && c.id != keeper.id)
+        .collect();
+    if others.is_empty() {
+        return Err(Error::msg("Nothing to merge."));
+    }
+
+    let vault = state.vault()?;
+    let mut trashed = Vec::new();
+
+    for other in &others {
+        for tag in &other.tags {
+            if !keeper.tags.iter().any(|t| t.eq_ignore_ascii_case(tag)) {
+                keeper.tags.push(tag.clone());
+            }
+        }
+        // Only append text that is genuinely different; merging two identical
+        // cards should not produce one card that says everything twice.
+        if !other.front.trim().is_empty() && !keeper.front.contains(other.front.trim()) {
+            keeper.front = format!("{}\n\n{}", keeper.front.trim(), other.front.trim());
+        }
+        if !other.back.trim().is_empty() && !keeper.back.contains(other.back.trim()) {
+            keeper.back = if keeper.back.trim().is_empty() {
+                other.back.trim().to_string()
+            } else {
+                format!("{}\n\n{}", keeper.back.trim(), other.back.trim())
+            };
+        }
+        if keeper.deck.is_none() {
+            keeper.deck = other.deck.clone();
+        }
+        keeper.starred = keeper.starred || other.starred;
+        // Keep the earliest creation date: the idea is as old as its first card.
+        keeper.created = keeper.created.min(other.created);
+    }
+
+    keeper.updated = model::now();
+    vault.save(&mut keeper)?;
+
+    for other in &others {
+        if let Ok(path) = vault.trash(&other.path) {
+            trashed.push(Deleted {
+                id: other.id.clone(),
+                trashed_path: path,
+            });
+        }
+    }
+
+    state.refresh()?;
+    Ok(MergeResult {
+        card: keeper,
+        trashed,
+    })
+}
+
+#[derive(Debug, Serialize)]
+pub struct MergeResult {
+    pub card: Card,
+    /// Where the absorbed cards went, so the merge can be undone.
+    pub trashed: Vec<Deleted>,
+}
+
+// ---------------------------------------------------------------------------
+// Resurfacing
+// ---------------------------------------------------------------------------
+
+/// An older card worth seeing again. Knowledge capture has a failure mode —
+/// cards go in and are never read — and a gentle nudge is the cheapest fix.
+///
+/// Cards under a day old are skipped (you have just seen them), reviewable
+/// cards that are already due are skipped (they belong in a review session),
+/// and the choice is stable for the whole day so the home screen does not
+/// shuffle every time it is opened.
+#[tauri::command]
+pub fn resurfaced_card(state: State<'_, AppState>) -> Option<Card> {
+    resurface_inner(&state)
+}
+
+pub fn resurface_inner(state: &AppState) -> Option<Card> {
+    let now = Utc::now();
+    let candidates: Vec<Card> = state
+        .cards_snapshot()
+        .into_iter()
+        .filter(|c| (now - c.updated).num_hours() >= 24)
+        .filter(|c| !c.is_due(now))
+        .collect();
+    if candidates.is_empty() {
+        return None;
+    }
+    // Seed from the date so the pick is one card per day, not one per render.
+    let seed = Local::now()
+        .date_naive()
+        .signed_duration_since(chrono::NaiveDate::default())
+        .num_days()
+        .unsigned_abs() as usize;
+    Some(candidates[seed % candidates.len()].clone())
 }

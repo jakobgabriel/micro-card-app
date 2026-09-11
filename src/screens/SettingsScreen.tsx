@@ -17,18 +17,20 @@ import {
   RefreshCcw,
   Sun,
   Target,
+  Trash2,
   Type,
   Upload,
 } from "lucide-react";
 
 import { GithubSetup } from "@/components/GithubSetup";
+import { TrashSheet } from "@/components/TrashSheet";
 import { Sheet } from "@/components/Sheet";
 import { Button, Chip, IconButton, Spinner } from "@/components/ui";
 import { useToast } from "@/components/Toast";
 import { api, errorMessage } from "@/lib/api";
 import { useStore } from "@/lib/store";
 import { cancelReminder, scheduleReminder } from "@/lib/reminders";
-import type { Theme, VaultCandidate } from "@/lib/types";
+import type { ExportFormat, Theme, VaultCandidate } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 export function SettingsScreen({ onBack }: { onBack: () => void }) {
@@ -49,6 +51,8 @@ export function SettingsScreen({ onBack }: { onBack: () => void }) {
   const [busy, setBusy] = useState(false);
   const [githubOpen, setGithubOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
+  const [exportOpen, setExportOpen] = useState(false);
+  const [trashOpen, setTrashOpen] = useState(false);
 
   useEffect(() => {
     if (library) setFolder(library.settings.folder);
@@ -124,16 +128,22 @@ export function SettingsScreen({ onBack }: { onBack: () => void }) {
     }
   };
 
-  const exportCards = async () => {
+  const exportAs = async (format: ExportFormat) => {
+    const spec = {
+      markdown: { extension: "md", name: "Markdown" },
+      csv: { extension: "csv", name: "CSV" },
+      json: { extension: "json", name: "JSON" },
+    }[format];
     try {
-      const markdown = await api.exportMarkdown();
+      const contents = await api.exportCards(format);
       const { save } = await import("@tauri-apps/plugin-dialog");
       const path = await save({
-        defaultPath: "micro-card-export.md",
-        filters: [{ name: "Markdown", extensions: ["md"] }],
+        defaultPath: `micro-card-export.${spec.extension}`,
+        filters: [{ name: spec.name, extensions: [spec.extension] }],
       });
       if (!path) return;
-      await api.writeTextFile(path, markdown);
+      await api.writeTextFile(path, contents);
+      setExportOpen(false);
       toast.success("Exported");
     } catch (err) {
       toast.error(errorMessage(err));
@@ -444,10 +454,19 @@ export function SettingsScreen({ onBack }: { onBack: () => void }) {
         <Row
           icon={<Download className="h-5 w-5" />}
           title="Export"
-          subtitle="One Markdown file with every card"
+          subtitle="Markdown to read, CSV for Anki, JSON for everything"
         >
-          <Button size="sm" variant="secondary" onClick={() => void exportCards()}>
+          <Button size="sm" variant="secondary" onClick={() => setExportOpen(true)}>
             Export
+          </Button>
+        </Row>
+        <Row
+          icon={<Trash2 className="h-5 w-5" />}
+          title="Recently deleted"
+          subtitle="Restore a card, or empty the trash"
+        >
+          <Button size="sm" variant="secondary" onClick={() => setTrashOpen(true)}>
+            Open
           </Button>
         </Row>
         <Row
@@ -479,6 +498,44 @@ export function SettingsScreen({ onBack }: { onBack: () => void }) {
 
       <GithubSetup open={githubOpen} onClose={() => setGithubOpen(false)} />
       <ImportSheet open={importOpen} onClose={() => setImportOpen(false)} />
+      <TrashSheet open={trashOpen} onClose={() => setTrashOpen(false)} />
+
+      <Sheet open={exportOpen} onClose={() => setExportOpen(false)} title="Export your cards">
+        <p className="pb-3 text-sm leading-relaxed text-muted">
+          Your cards are already Markdown files in a folder you control — this is
+          for taking them somewhere else.
+        </p>
+        <div className="space-y-2 pb-2">
+          {(
+            [
+              {
+                format: "markdown",
+                title: "Markdown document",
+                body: "One readable file, grouped by deck. Good for printing or sharing.",
+              },
+              {
+                format: "csv",
+                title: "CSV for Anki",
+                body: "Front, back and tags — what Anki's import dialog expects.",
+              },
+              {
+                format: "json",
+                title: "JSON backup",
+                body: "Everything, review schedules included.",
+              },
+            ] as { format: ExportFormat; title: string; body: string }[]
+          ).map((option) => (
+            <button
+              key={option.format}
+              onClick={() => void exportAs(option.format)}
+              className="card-surface w-full p-4 text-left active:scale-[.98]"
+            >
+              <p className="font-bold">{option.title}</p>
+              <p className="text-sm leading-relaxed text-muted">{option.body}</p>
+            </button>
+          ))}
+        </div>
+      </Sheet>
     </div>
   );
 }

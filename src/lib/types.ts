@@ -186,6 +186,27 @@ export interface Deleted {
   trashed_path: string;
 }
 
+export interface TrashedCard {
+  path: string;
+  title: string;
+  kind: CardKind;
+  preview: string;
+  deleted_at: string;
+}
+
+export interface SharedText {
+  text: string;
+  subject: string | null;
+  source: string | null;
+}
+
+export type ExportFormat = "markdown" | "csv" | "json";
+
+export interface MergeResult {
+  card: Card;
+  trashed: Deleted[];
+}
+
 export const KIND_LABELS: Record<CardKind, string> = {
   note: "Note",
   qa: "Q & A",

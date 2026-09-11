@@ -1,5 +1,5 @@
 /** Today at a glance: what is due, what you captured, and one big way in. */
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   ArrowRight,
   BarChart3,
@@ -8,16 +8,18 @@ import {
   Inbox,
   PenLine,
   RefreshCcw,
+  RotateCcw,
   Settings2,
   Sparkles,
   Wand2,
 } from "lucide-react";
 
 import { CardTile } from "@/components/CardTile";
+import { api } from "@/lib/api";
 import { Button, EmptyState, IconButton, ProgressRing } from "@/components/ui";
 import { useStore } from "@/lib/store";
 import type { Card } from "@/lib/types";
-import { cn, isDue } from "@/lib/utils";
+import { cn, isDue, plainText } from "@/lib/utils";
 
 interface Props {
   onCapture: () => void;
@@ -33,6 +35,21 @@ export function Home({ onCapture, onOpenCard, onReview, onSettings, onStats }: P
   const cards = library?.cards ?? [];
 
   const recent = useMemo(() => cards.slice(0, 6), [cards]);
+
+  // One older card a day, as a nudge to actually re-read what was captured.
+  const [resurfaced, setResurfaced] = useState<Card | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .resurfacedCard()
+      .then((card) => {
+        if (!cancelled) setResurfaced(card);
+      })
+      .catch(() => setResurfaced(null));
+    return () => {
+      cancelled = true;
+    };
+  }, [library?.stats.total]);
   const dueCount = useMemo(() => cards.filter(isDue).length, [cards]);
   const greeting = useMemo(() => {
     const hour = new Date().getHours();
@@ -112,6 +129,22 @@ export function Home({ onCapture, onOpenCard, onReview, onSettings, onStats }: P
         <Stat label="Today" value={stats?.captured_today ?? 0} />
         <Stat label="Due" value={dueCount} highlight={dueCount > 0} />
       </div>
+
+      {resurfaced && (
+        <button
+          onClick={() => onOpenCard(resurfaced)}
+          className="mt-5 w-full rounded-2xl border border-dashed border-brand/40 bg-brand-soft/40 p-4 text-left active:scale-[.98]"
+        >
+          <p className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-brand">
+            <RotateCcw className="h-3.5 w-3.5" />
+            From your cards
+          </p>
+          <p className="mt-1.5 font-bold leading-snug">{resurfaced.title}</p>
+          <p className="clamp-2 mt-0.5 text-sm leading-relaxed text-muted">
+            {plainText(resurfaced.front)}
+          </p>
+        </button>
+      )}
 
       <h2 className="mb-2 mt-6 px-1 text-sm font-bold uppercase tracking-wide text-muted">
         Recent

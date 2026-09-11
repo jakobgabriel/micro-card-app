@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Compass, Home as HomeIcon, Layers, Plus, Repeat } from "lucide-react";
 
 import { CaptureSheet } from "@/components/CaptureSheet";
@@ -11,6 +11,7 @@ import { Onboarding } from "@/screens/Onboarding";
 import { Review } from "@/screens/Review";
 import { SettingsScreen } from "@/screens/SettingsScreen";
 import { Stats } from "@/screens/Stats";
+import { api } from "@/lib/api";
 import { useStore } from "@/lib/store";
 import { applyTheme, watchSystemTheme } from "@/lib/theme";
 import type { Card, SessionRequest } from "@/lib/types";
@@ -30,6 +31,8 @@ export function App() {
   const [libraryQuery, setLibraryQuery] = useState<string | undefined>();
   const [sessionFilter, setSessionFilter] = useState<SessionRequest | undefined>();
   const [selecting, setSelecting] = useState(false);
+  /** Text shared in from another app, waiting to become a card. */
+  const [sharedDraft, setSharedDraft] = useState<string | undefined>();
 
   const settings = library?.settings;
 
@@ -40,6 +43,37 @@ export function App() {
     if (settings.theme !== "system") return;
     return watchSystemTheme(() => applyTheme(settings));
   }, [settings]);
+
+  // Pick up anything shared in from another app, on launch and whenever the
+  // app comes forward — which is exactly when Android hands a share over.
+  const collectingShare = useRef(false);
+  useEffect(() => {
+    const collect = async () => {
+      if (collectingShare.current) return;
+      collectingShare.current = true;
+      try {
+        const shared = await api.takeSharedText();
+        if (shared?.text?.trim()) {
+          // A subject (a page title, an email subject) makes a better first
+          // line than the raw text that follows it.
+          const text = shared.subject?.trim()
+            ? `${shared.subject.trim()}\n\n${shared.text.trim()}`
+            : shared.text.trim();
+          setSharedDraft(text);
+        }
+      } catch {
+        // No share waiting, or a platform without one.
+      } finally {
+        collectingShare.current = false;
+      }
+    };
+    void collect();
+    const onVisible = () => {
+      if (document.visibilityState === "visible") void collect();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, []);
 
   // Keep the open detail card in step with the library after an edit.
   useEffect(() => {
@@ -168,11 +202,13 @@ export function App() {
       )}
 
       <CaptureSheet
-        open={capturing || editing !== null}
+        open={capturing || editing !== null || sharedDraft !== undefined}
         editing={editing}
+        initialText={sharedDraft}
         onClose={() => {
           setCapturing(false);
           setEditing(null);
+          setSharedDraft(undefined);
         }}
       />
 
