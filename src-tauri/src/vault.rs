@@ -217,7 +217,7 @@ impl Vault {
             let parsed = markdown::parse(&content, &self.rel(path), stem, modified);
             out.push(parsed.card);
         }
-        out.sort_by(|a, b| b.updated.cmp(&a.updated));
+        out.sort_by_key(|card| std::cmp::Reverse(card.updated));
         Ok(out)
     }
 
@@ -355,7 +355,7 @@ impl Vault {
                 deleted_at: deleted,
             });
         }
-        out.sort_by(|a, b| b.deleted_at.cmp(&a.deleted_at));
+        out.sort_by_key(|card| std::cmp::Reverse(card.deleted_at));
         Ok(out)
     }
 
@@ -481,7 +481,7 @@ pub fn find_vaults(roots: &[PathBuf], max_depth: usize) -> Vec<VaultCandidate> {
             });
         }
     }
-    found.sort_by(|a, b| b.note_count.cmp(&a.note_count));
+    found.sort_by_key(|vault| std::cmp::Reverse(vault.note_count));
     found
 }
 

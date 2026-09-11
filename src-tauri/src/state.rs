@@ -335,7 +335,7 @@ impl AppState {
                 count,
             })
             .collect();
-        kind_stats.sort_by(|a, b| b.count.cmp(&a.count));
+        kind_stats.sort_by_key(|k| std::cmp::Reverse(k.count));
 
         let forecast = (0..14)
             .map(|offset| {

@@ -2,13 +2,30 @@ name: Android APK
 
 on:
   workflow_dispatch:
+    inputs:
+      profile:
+        description: Build profile
+        type: choice
+        options: [debug, release]
+        default: debug
+      targets:
+        description: "ABIs to build, space separated: aarch64 armv7 i686 x86_64"
+        type: string
+        default: aarch64
   push:
+    branches: ["claude/**"]
     tags: ["v*"]
+
+# One build at a time per branch; a new push makes the previous one pointless.
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   apk:
-    name: Build debug APK
+    name: Build APK
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 
@@ -24,33 +41,97 @@ jobs:
 
       - uses: android-actions/setup-android@v3
 
-      - name: Install the Android NDK
+      # The runner image already ships an NDK. Using it avoids a download and,
+      # more importantly, avoids pinning a version that may not exist in the
+      # SDK catalogue on the day this runs.
+      - name: Locate the Android NDK
         run: |
-          sdkmanager --install "ndk;27.0.12077973"
-          echo "NDK_HOME=$ANDROID_HOME/ndk/27.0.12077973" >> "$GITHUB_ENV"
+          ndk="${ANDROID_NDK_LATEST_HOME:-$ANDROID_NDK_ROOT}"
+          if [ -z "$ndk" ] || [ ! -d "$ndk" ]; then
+            echo "No pre-installed NDK found; installing one."
+            sdkmanager --install "ndk;27.2.12479018"
+            ndk="$ANDROID_HOME/ndk/27.2.12479018"
+          fi
+          echo "Using NDK at $ndk"
+          echo "NDK_HOME=$ndk" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_ROOT=$ndk" >> "$GITHUB_ENV"
 
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android
+      - name: Work out which ABIs to build
+        id: abis
+        run: |
+          targets="${{ inputs.targets }}"
+          # A tag build ships to real devices, so it covers every ABI.
+          if [ -z "$targets" ]; then
+            case "${{ github.ref }}" in
+              refs/tags/*) targets="aarch64 armv7 i686 x86_64" ;;
+              *) targets="aarch64" ;;
+            esac
+          fi
+          echo "targets=$targets" >> "$GITHUB_OUTPUT"
+          rust_targets=""
+          for abi in $targets; do
+            case "$abi" in
+              aarch64) rust_targets="$rust_targets aarch64-linux-android" ;;
+              armv7)   rust_targets="$rust_targets armv7-linux-androideabi" ;;
+              i686)    rust_targets="$rust_targets i686-linux-android" ;;
+              x86_64)  rust_targets="$rust_targets x86_64-linux-android" ;;
+            esac
+          done
+          echo "rust_targets=$rust_targets" >> "$GITHUB_OUTPUT"
+
+      # rust-toolchain.toml decides the version; the targets are added to it.
+      - name: Add the Android Rust targets
+        working-directory: src-tauri
+        run: |
+          rustup show active-toolchain
+          rustup target add ${{ steps.abis.outputs.rust_targets }}
 
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
+          key: android-${{ steps.abis.outputs.targets }}
 
       - run: npm ci
 
       # `gen/android` is generated, not committed, so it is created here and
-      # then patched with the storage permissions the vault needs.
+      # then patched with the storage permissions and the share target.
       - name: Generate and patch the Android project
         run: |
-          npx tauri android init --ci
+          npm run tauri -- android init --ci --skip-targets-install
           node scripts/patch-android.mjs
 
-      - name: Build APK
-        run: npx tauri android build --apk --debug
+      - name: Build the APK
+        run: |
+          profile="${{ inputs.profile }}"
+          case "${{ github.ref }}" in
+            refs/tags/*) profile="${profile:-release}" ;;
+          esac
+          flags="--apk --target ${{ steps.abis.outputs.targets }}"
+          if [ "${profile:-debug}" = "debug" ]; then
+            flags="$flags --debug"
+          fi
+          echo "Building with: $flags"
+          npm run tauri -- android build $flags
+
+      - name: Collect the APKs
+        id: collect
+        run: |
+          mkdir -p dist-apk
+          found=$(find src-tauri/gen/android -name "*.apk" -print)
+          if [ -z "$found" ]; then
+            echo "No APK was produced. Tree under outputs:"
+            find src-tauri/gen/android/app/build/outputs -type f | head -50 || true
+            exit 1
+          fi
+          echo "$found" | while read -r apk; do
+            echo "  $apk"
+            cp "$apk" dist-apk/
+          done
+          ls -la dist-apk
 
       - uses: actions/upload-artifact@v4
         with:
-          name: micro-card-debug-apk
-          path: src-tauri/gen/android/app/build/outputs/apk/**/*.apk
+          name: micro-card-apk-${{ github.sha }}
+          path: dist-apk/*.apk
           if-no-files-found: error
+          retention-days: 14
