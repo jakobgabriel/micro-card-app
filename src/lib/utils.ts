@@ -274,3 +274,75 @@ export function suggestLinks(cards: Card[], query: string, limit = 6): Card[] {
 export function linkNameFor(card: Card): string {
   return card.path.split("/").pop()?.replace(/\.md$/, "") || card.title;
 }
+
+/**
+ * Split text into matched and unmatched runs for a search query, so results
+ * can show why they matched.
+ *
+ * Terms with a `#` or `deck:` prefix are search operators rather than text, so
+ * they are not highlighted in the body.
+ */
+export function highlightRuns(
+  text: string,
+  query: string,
+): { text: string; match: boolean }[] {
+  const terms = query
+    .trim()
+    .toLowerCase()
+    .split(/\s+/)
+    .filter((term) => term && !term.startsWith("#") && !term.startsWith("deck:"));
+  if (terms.length === 0) return [{ text, match: false }];
+
+  const lower = text.toLowerCase();
+  // Collect every span any term covers, then merge the overlaps.
+  const spans: [number, number][] = [];
+  for (const term of terms) {
+    let from = 0;
+    while (from <= lower.length - term.length) {
+      const at = lower.indexOf(term, from);
+      if (at === -1) break;
+      spans.push([at, at + term.length]);
+      from = at + term.length;
+    }
+  }
+  if (spans.length === 0) return [{ text, match: false }];
+
+  spans.sort((a, b) => a[0] - b[0]);
+  const merged: [number, number][] = [];
+  for (const span of spans) {
+    const last = merged[merged.length - 1];
+    if (last && span[0] <= last[1]) last[1] = Math.max(last[1], span[1]);
+    else merged.push([...span]);
+  }
+
+  const runs: { text: string; match: boolean }[] = [];
+  let cursor = 0;
+  for (const [start, end] of merged) {
+    if (start > cursor) runs.push({ text: text.slice(cursor, start), match: false });
+    runs.push({ text: text.slice(start, end), match: true });
+    cursor = end;
+  }
+  if (cursor < text.length) runs.push({ text: text.slice(cursor), match: false });
+  return runs;
+}
+
+/**
+ * A preview window around the first match, so a hit deep in a long card is
+ * visible instead of being cut off by the two-line clamp.
+ */
+export function previewAround(text: string, query: string, span = 120): string {
+  const terms = query
+    .trim()
+    .toLowerCase()
+    .split(/\s+/)
+    .filter((term) => term && !term.startsWith("#") && !term.startsWith("deck:"));
+  if (terms.length === 0) return text;
+  const lower = text.toLowerCase();
+  const at = terms
+    .map((term) => lower.indexOf(term))
+    .filter((index) => index >= 0)
+    .sort((a, b) => a - b)[0];
+  if (at === undefined || at < span) return text;
+  const from = Math.max(0, at - span / 2);
+  return `…${text.slice(from)}`;
+}

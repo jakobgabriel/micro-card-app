@@ -78,6 +78,8 @@ pub fn run() {
             commands::merge_cards,
             commands::resurfaced_card,
             commands::add_attachment,
+            commands::unused_attachments,
+            commands::tidy_attachments,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Micro Card");

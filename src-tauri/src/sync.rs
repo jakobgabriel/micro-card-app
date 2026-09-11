@@ -18,6 +18,23 @@ use sha1::{Digest, Sha1};
 
 use crate::error::{Error, Result};
 
+/// Files above this size are left out of the sync. GitHub's blob API accepts
+/// more, but a repository is not a photo library, and a single huge file
+/// failing would take the whole commit with it.
+pub const MAX_FILE_BYTES: u64 = 20 * 1024 * 1024;
+
+/// Does this file take part in the sync?
+///
+/// Cards themselves, and anything the cards attach. Other files a user keeps
+/// in the folder are none of the app's business.
+pub fn syncable(relative_name: &str) -> bool {
+    let name = relative_name.replace('\\', "/");
+    if name.split('/').any(|part| part.starts_with('.')) {
+        return false;
+    }
+    name.ends_with(".md") || name.starts_with("attachments/")
+}
+
 /// Git's object id for a blob: `sha1("blob <len>\0<content>")`.
 ///
 /// Computing it locally means a file that already matches the remote is
@@ -38,9 +55,12 @@ pub struct RemoteFile {
 }
 
 /// A change to apply to the remote in a single commit.
+///
+/// Content is bytes, not text: a card is UTF-8 Markdown but a photo attached
+/// to it is not, and both have to reach the repository.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Change {
-    Write { path: String, content: String },
+    Write { path: String, content: Vec<u8> },
     Delete { path: String },
 }
 
@@ -49,8 +69,8 @@ pub enum Change {
 pub trait Remote {
     /// Every file under `prefix`, with its blob sha.
     fn list(&self, prefix: &str) -> Result<Vec<RemoteFile>>;
-    /// The content of one blob.
-    fn read(&self, path: &str, sha: &str) -> Result<String>;
+    /// The raw bytes of one blob.
+    fn read(&self, path: &str, sha: &str) -> Result<Vec<u8>>;
     /// Apply all changes as one commit. Returns the new commit sha.
     fn commit(&self, changes: &[Change], message: &str) -> Result<String>;
 }
@@ -137,6 +157,18 @@ impl LocalTree {
         }
     }
 
+    /// A repository path without the folder prefix, e.g.
+    /// `Cards/attachments/a.jpg` -> `attachments/a.jpg`.
+    fn relative_name<'a>(&self, repo_path: &'a str) -> &'a str {
+        if self.prefix.is_empty() {
+            repo_path
+        } else {
+            repo_path
+                .strip_prefix(&format!("{}/", self.prefix))
+                .unwrap_or(repo_path)
+        }
+    }
+
     fn local_path(&self, repo_path: &str) -> PathBuf {
         let relative = match self.prefix.is_empty() {
             true => repo_path,
@@ -147,7 +179,11 @@ impl LocalTree {
         self.dir.join(relative)
     }
 
-    /// Every Markdown file in the folder, keyed by repository path.
+    /// Every file the sync carries, keyed by repository path.
+    ///
+    /// Cards are Markdown; everything inside `attachments/` comes too, so a
+    /// card that embeds a photo does not arrive on another device with the
+    /// photo missing.
     fn scan(&self) -> Result<BTreeMap<String, String>> {
         let mut out = BTreeMap::new();
         if !self.dir.exists() {
@@ -163,13 +199,18 @@ impl LocalTree {
                 continue;
             }
             let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) != Some("md") {
-                continue;
-            }
             let Ok(relative) = path.strip_prefix(&self.dir) else {
                 continue;
             };
             let name = relative.to_string_lossy().replace('\\', "/");
+            if !syncable(&name) {
+                continue;
+            }
+            // A file too big for the API would fail the whole commit; skipping
+            // it keeps the rest of the sync working.
+            if entry.metadata().map(|m| m.len()).unwrap_or(0) > MAX_FILE_BYTES {
+                continue;
+            }
             out.insert(self.repo_path(&name), blob_sha_of_file(path)?);
         }
         Ok(out)
@@ -180,14 +221,18 @@ fn blob_sha_of_file(path: &Path) -> Result<String> {
     Ok(blob_sha(&fs::read(path)?))
 }
 
-/// Name for the copy kept when both sides changed the same card.
+/// Name for the copy kept when both sides changed the same file.
 fn conflict_name(repo_path: &str, stamp: &str) -> String {
     let (dir, file) = match repo_path.rsplit_once('/') {
         Some((d, f)) => (format!("{d}/"), f),
         None => (String::new(), repo_path),
     };
-    let stem = file.strip_suffix(".md").unwrap_or(file);
-    format!("{dir}{stem} (from GitHub {stamp}).md")
+    // Keep the extension: a conflicted photo is still a photo.
+    let (stem, extension) = match file.rsplit_once('.') {
+        Some((stem, ext)) if !stem.is_empty() => (stem, format!(".{ext}")),
+        _ => (file, String::new()),
+    };
+    format!("{dir}{stem} (from GitHub {stamp}){extension}")
 }
 
 /// Run one full sync: pull remote changes into `local`, then push local
@@ -202,7 +247,7 @@ pub fn sync(
     let remote_files: BTreeMap<String, String> = remote
         .list(&local.prefix)?
         .into_iter()
-        .filter(|f| f.path.ends_with(".md"))
+        .filter(|f| syncable(local.relative_name(&f.path)))
         .map(|f| (f.path, f.sha))
         .collect();
 
@@ -236,7 +281,7 @@ pub fn sync(
                     report.pulled += 1;
                     next_base.insert(path.clone(), r.clone());
                 } else if local_moved && !remote_moved {
-                    let content = fs::read_to_string(local.local_path(path))?;
+                    let content = fs::read(local.local_path(path))?;
                     changes.push(Change::Write {
                         path: path.clone(),
                         content,
@@ -254,7 +299,7 @@ pub fn sync(
                         path: copy.clone(),
                         content: remote_content.clone(),
                     });
-                    let content = fs::read_to_string(local.local_path(path))?;
+                    let content = fs::read(local.local_path(path))?;
                     changes.push(Change::Write {
                         path: path.clone(),
                         content,
@@ -262,7 +307,7 @@ pub fn sync(
                     report.conflicts.push(display_name(path));
                     report.pushed += 1;
                     next_base.insert(path.clone(), l.clone());
-                    next_base.insert(copy, blob_sha(remote_content.as_bytes()));
+                    next_base.insert(copy, blob_sha(&remote_content));
                 }
             }
 
@@ -273,7 +318,7 @@ pub fn sync(
                     remove_local(local, path)?;
                     report.deleted_local += 1;
                 } else {
-                    let content = fs::read_to_string(local.local_path(path))?;
+                    let content = fs::read(local.local_path(path))?;
                     changes.push(Change::Write {
                         path: path.clone(),
                         content,
@@ -326,7 +371,7 @@ fn commit_message(report: &SyncReport) -> String {
     let mut parts = Vec::new();
     if report.pushed > 0 {
         parts.push(format!(
-            "{} card{}",
+            "{} file{}",
             report.pushed,
             if report.pushed == 1 { "" } else { "s" }
         ));
@@ -341,12 +386,12 @@ fn commit_message(report: &SyncReport) -> String {
     }
 }
 
-fn write_local(local: &LocalTree, repo_path: &str, content: &str) -> Result<()> {
+fn write_local(local: &LocalTree, repo_path: &str, content: &[u8]) -> Result<()> {
     let path = local.local_path(repo_path);
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    fs::write(&path, content.as_bytes())?;
+    fs::write(&path, content)?;
     Ok(())
 }
 
@@ -384,7 +429,7 @@ mod tests {
 
     /// An in-memory remote, so the merge logic is tested without a network.
     struct FakeRemote {
-        files: RefCell<HashMap<String, String>>,
+        files: RefCell<HashMap<String, Vec<u8>>>,
         commits: RefCell<Vec<String>>,
     }
 
@@ -394,14 +439,24 @@ mod tests {
                 files: RefCell::new(
                     files
                         .iter()
-                        .map(|(p, c)| (p.to_string(), c.to_string()))
+                        .map(|(p, c)| (p.to_string(), c.as_bytes().to_vec()))
                         .collect(),
                 ),
                 commits: RefCell::new(Vec::new()),
             }
         }
+        /// Text content, for the majority of tests that deal in cards.
         fn content(&self, path: &str) -> Option<String> {
+            self.bytes(path)
+                .map(|b| String::from_utf8_lossy(&b).to_string())
+        }
+        fn bytes(&self, path: &str) -> Option<Vec<u8>> {
             self.files.borrow().get(path).cloned()
+        }
+        fn put(&self, path: &str, content: &[u8]) {
+            self.files
+                .borrow_mut()
+                .insert(path.to_string(), content.to_vec());
         }
     }
 
@@ -414,11 +469,11 @@ mod tests {
                 .filter(|(p, _)| prefix.is_empty() || p.starts_with(prefix))
                 .map(|(p, c)| RemoteFile {
                     path: p.clone(),
-                    sha: blob_sha(c.as_bytes()),
+                    sha: blob_sha(c),
                 })
                 .collect())
         }
-        fn read(&self, path: &str, _sha: &str) -> Result<String> {
+        fn read(&self, path: &str, _sha: &str) -> Result<Vec<u8>> {
             self.files
                 .borrow()
                 .get(path)
@@ -462,7 +517,12 @@ mod tests {
             }
         }
         fn write(&self, name: &str, content: &str) {
-            fs::write(self.tree.dir.join(name), content).unwrap();
+            self.write_bytes(name, content.as_bytes());
+        }
+        fn write_bytes(&self, name: &str, content: &[u8]) {
+            let path = self.tree.dir.join(name);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, content).unwrap();
         }
         fn read(&self, name: &str) -> Option<String> {
             fs::read_to_string(self.tree.dir.join(name)).ok()
@@ -546,10 +606,7 @@ mod tests {
         sync(&fx.tree, &remote, &mut state, "t0").unwrap();
 
         // Remote moves on; local does not.
-        remote
-            .files
-            .borrow_mut()
-            .insert("Cards/Card.md".into(), "v2 from the web".into());
+        remote.put("Cards/Card.md", b"v2 from the web");
         let report = sync(&fx.tree, &remote, &mut state, "t1").unwrap();
         assert_eq!(report.pulled, 1);
         assert_eq!(fx.read("Card.md").as_deref(), Some("v2 from the web"));
@@ -573,10 +630,7 @@ mod tests {
         sync(&fx.tree, &remote, &mut state, "t0").unwrap();
 
         fx.write("Card.md", "edited on the phone");
-        remote
-            .files
-            .borrow_mut()
-            .insert("Cards/Card.md".into(), "edited on the web".into());
+        remote.put("Cards/Card.md", b"edited on the web");
 
         let report = sync(&fx.tree, &remote, &mut state, "2026-01-02").unwrap();
 
@@ -640,10 +694,7 @@ mod tests {
         sync(&fx.tree, &remote, &mut state, "t0").unwrap();
 
         fs::remove_file(fx.tree.dir.join("Contested.md")).unwrap();
-        remote
-            .files
-            .borrow_mut()
-            .insert("Cards/Contested.md".into(), "someone kept working".into());
+        remote.put("Cards/Contested.md", b"someone kept working");
 
         let report = sync(&fx.tree, &remote, &mut state, "t1").unwrap();
 
@@ -656,11 +707,12 @@ mod tests {
     }
 
     #[test]
-    fn only_markdown_files_take_part() {
+    fn cards_and_their_attachments_sync_but_stray_files_do_not() {
         let fx = Fixture::new("filter");
         fx.write("Card.md", "yes");
-        fx.write("notes.txt", "no");
-        let remote = FakeRemote::new(&[("Cards/image.png", "binary-ish")]);
+        fx.write("notes.txt", "not a card");
+        // A loose image beside the cards is somebody else's file.
+        let remote = FakeRemote::new(&[("Cards/image.png", "stray")]);
         let mut state = SyncState::default();
 
         let report = sync(&fx.tree, &remote, &mut state, "t0").unwrap();
@@ -668,6 +720,65 @@ mod tests {
         assert_eq!(report.pushed, 1);
         assert_eq!(report.pulled, 0);
         assert!(remote.content("Cards/notes.txt").is_none());
+        assert!(fx.read("image.png").is_none());
+    }
+
+    #[test]
+    fn a_photo_attached_to_a_card_travels_with_it() {
+        let fx = Fixture::new("attachments");
+        fx.write("Holiday.md", "Look at this\n\n![[beach.jpg]]");
+        // Bytes that are not valid UTF-8, as a real photo would be.
+        let photo: Vec<u8> = vec![0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46];
+        fx.write_bytes("attachments/beach.jpg", &photo);
+        let remote = FakeRemote::new(&[]);
+        let mut state = SyncState::default();
+
+        let report = sync(&fx.tree, &remote, &mut state, "t0").unwrap();
+
+        assert_eq!(report.pushed, 2, "the card and its photo");
+        assert_eq!(
+            remote.bytes("Cards/attachments/beach.jpg").as_deref(),
+            Some(photo.as_slice()),
+            "the photo must arrive byte for byte"
+        );
+    }
+
+    #[test]
+    fn a_photo_added_on_another_device_is_pulled_down_intact() {
+        let fx = Fixture::new("pull-photo");
+        let photo: Vec<u8> = vec![0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0xFF, 0x00];
+        let remote = FakeRemote::new(&[]);
+        remote.put("Cards/attachments/diagram.png", &photo);
+        let mut state = SyncState::default();
+
+        let report = sync(&fx.tree, &remote, &mut state, "t0").unwrap();
+
+        assert_eq!(report.pulled, 1);
+        assert_eq!(
+            fs::read(fx.tree.dir.join("attachments/diagram.png")).unwrap(),
+            photo
+        );
+    }
+
+    #[test]
+    fn a_conflicted_photo_keeps_its_extension() {
+        assert_eq!(
+            conflict_name("Cards/attachments/beach.jpg", "2026-01-02"),
+            "Cards/attachments/beach (from GitHub 2026-01-02).jpg"
+        );
+        assert_eq!(
+            conflict_name("Cards/Note.md", "2026-01-02"),
+            "Cards/Note (from GitHub 2026-01-02).md"
+        );
+    }
+
+    #[test]
+    fn hidden_files_and_stray_types_are_left_alone() {
+        assert!(syncable("Card.md"));
+        assert!(syncable("attachments/photo.jpg"));
+        assert!(!syncable("notes.txt"));
+        assert!(!syncable(".obsidian/workspace.json"));
+        assert!(!syncable("attachments/.DS_Store"));
     }
 
     #[test]

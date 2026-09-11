@@ -2,7 +2,16 @@ import { useRef, useState } from "react";
 import { Check, Star, Trash2 } from "lucide-react";
 
 import type { Card } from "@/lib/types";
-import { KIND_STYLE, cn, haptic, isDue, plainText, timeAgo } from "@/lib/utils";
+import {
+  KIND_STYLE,
+  cn,
+  haptic,
+  highlightRuns,
+  isDue,
+  plainText,
+  previewAround,
+  timeAgo,
+} from "@/lib/utils";
 
 /** Past this distance the swipe commits when the finger lifts. */
 const COMMIT = 96;
@@ -20,6 +29,7 @@ export function CardTile({
   selected,
   onStar,
   onDelete,
+  query,
 }: {
   card: Card;
   onOpen: (card: Card) => void;
@@ -27,9 +37,13 @@ export function CardTile({
   selected?: boolean;
   onStar?: (card: Card) => void;
   onDelete?: (card: Card) => void;
+  /** The search that produced this result, for highlighting. */
+  query?: string;
 }) {
   const style = KIND_STYLE[card.kind];
-  const preview = plainText(card.kind === "qa" ? card.back || card.front : card.front);
+  const body = plainText(card.kind === "qa" ? card.back || card.front : card.front);
+  // Show the part of a long card that actually matched.
+  const preview = query ? previewAround(body, query) : body;
   const due = isDue(card);
 
   const [offset, setOffset] = useState(0);
@@ -149,10 +163,14 @@ export function CardTile({
           {card.starred && <Star className="h-4 w-4 shrink-0 fill-accent text-accent" />}
         </div>
 
-        <h3 className="clamp-2 text-[15px] font-bold leading-snug">{card.title}</h3>
+        <h3 className="clamp-2 text-[15px] font-bold leading-snug">
+          <Highlighted text={card.title} query={query} />
+        </h3>
 
         {preview && preview !== card.title && (
-          <p className="clamp-2 mt-1 text-sm leading-relaxed text-muted">{preview}</p>
+          <p className="clamp-2 mt-1 text-sm leading-relaxed text-muted">
+            <Highlighted text={preview} query={query} />
+          </p>
         )}
 
         {card.tags.length > 0 && (
@@ -169,5 +187,23 @@ export function CardTile({
         )}
       </button>
     </div>
+  );
+}
+
+/** Text with the search terms picked out. */
+function Highlighted({ text, query }: { text: string; query?: string }) {
+  if (!query?.trim()) return <>{text}</>;
+  return (
+    <>
+      {highlightRuns(text, query).map((run, index) =>
+        run.match ? (
+          <mark key={index} className="rounded bg-accent/25 text-ink">
+            {run.text}
+          </mark>
+        ) : (
+          <span key={index}>{run.text}</span>
+        ),
+      )}
+    </>
   );
 }

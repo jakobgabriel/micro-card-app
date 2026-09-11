@@ -17,6 +17,7 @@ import {
   RefreshCcw,
   Sun,
   Target,
+  ImageOff,
   Trash2,
   Type,
   Upload,
@@ -30,7 +31,12 @@ import { useToast } from "@/components/Toast";
 import { api, errorMessage } from "@/lib/api";
 import { useStore } from "@/lib/store";
 import { cancelReminder, scheduleReminder } from "@/lib/reminders";
-import type { ExportFormat, Theme, VaultCandidate } from "@/lib/types";
+import type {
+  ExportFormat,
+  OrphanedAttachment,
+  Theme,
+  VaultCandidate,
+} from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 export function SettingsScreen({ onBack }: { onBack: () => void }) {
@@ -53,6 +59,8 @@ export function SettingsScreen({ onBack }: { onBack: () => void }) {
   const [importOpen, setImportOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
   const [trashOpen, setTrashOpen] = useState(false);
+  const [orphans, setOrphans] = useState<OrphanedAttachment[] | null>(null);
+  const [tidying, setTidying] = useState(false);
 
   useEffect(() => {
     if (library) setFolder(library.settings.folder);
@@ -147,6 +155,36 @@ export function SettingsScreen({ onBack }: { onBack: () => void }) {
       toast.success("Exported");
     } catch (err) {
       toast.error(errorMessage(err));
+    }
+  };
+
+  /** Look for photos no card points at any more. */
+  const findOrphans = async () => {
+    setTidying(true);
+    try {
+      const found = await api.unusedAttachments();
+      setOrphans(found);
+      if (found.length === 0) toast.success("Nothing to tidy");
+    } catch (err) {
+      toast.error(errorMessage(err));
+    } finally {
+      setTidying(false);
+    }
+  };
+
+  const tidy = async () => {
+    setTidying(true);
+    try {
+      const { changed } = await api.tidyAttachments();
+      setOrphans([]);
+      await reload();
+      toast.success(
+        `${changed} file${changed === 1 ? "" : "s"} moved to trash`,
+      );
+    } catch (err) {
+      toast.error(errorMessage(err));
+    } finally {
+      setTidying(false);
     }
   };
 
@@ -469,6 +507,43 @@ export function SettingsScreen({ onBack }: { onBack: () => void }) {
             Open
           </Button>
         </Row>
+        <div className="card-surface p-4">
+          <div className="flex items-center gap-3">
+            <div className="grid h-10 w-10 shrink-0 place-items-center rounded-2xl bg-raised text-muted">
+              <ImageOff className="h-5 w-5" />
+            </div>
+            <div className="min-w-0 flex-1">
+              <p className="font-semibold">Unused photos</p>
+              <p className="truncate text-sm text-muted">
+                {orphans === null
+                  ? "Files left behind by deleted cards"
+                  : orphans.length === 0
+                    ? "Everything here is still in use"
+                    : `${orphans.length} file${orphans.length === 1 ? "" : "s"} · ${formatBytes(
+                        orphans.reduce((total, o) => total + o.size_bytes, 0),
+                      )}`}
+              </p>
+            </div>
+            <Button
+              size="sm"
+              variant={orphans && orphans.length > 0 ? "primary" : "secondary"}
+              loading={tidying}
+              onClick={() => void (orphans && orphans.length > 0 ? tidy() : findOrphans())}
+            >
+              {orphans && orphans.length > 0 ? "Tidy up" : "Check"}
+            </Button>
+          </div>
+          {orphans && orphans.length > 0 && (
+            <ul className="mt-3 space-y-1 text-sm text-muted">
+              {orphans.slice(0, 5).map((orphan) => (
+                <li key={orphan.name} className="truncate font-mono text-xs">
+                  {orphan.name}
+                </li>
+              ))}
+              {orphans.length > 5 && <li className="text-xs">and {orphans.length - 5} more</li>}
+            </ul>
+          )}
+        </div>
         <Row
           icon={<Upload className="h-5 w-5" />}
           title="Import"
@@ -642,6 +717,19 @@ function ImportSheet({ open, onClose }: { open: boolean; onClose: () => void }) 
       </Field>
     </Sheet>
   );
+}
+
+/** Bytes as something a person reads, e.g. "2.4 MB". */
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  const units = ["KB", "MB", "GB"];
+  let value = bytes / 1024;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  return `${value < 10 ? value.toFixed(1) : Math.round(value)} ${units[unit]}`;
 }
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {

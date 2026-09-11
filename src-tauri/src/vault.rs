@@ -325,6 +325,32 @@ impl Vault {
         Ok(self.rel(&dest))
     }
 
+    /// Attachment file names currently stored, in name order.
+    pub fn list_attachments(&self) -> Result<Vec<String>> {
+        let dir = self.attachments_dir();
+        if !dir.exists() {
+            return Ok(Vec::new());
+        }
+        let mut names: Vec<String> = fs::read_dir(&dir)?
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().is_file())
+            .filter_map(|e| e.file_name().to_str().map(String::from))
+            .filter(|name| !name.starts_with('.'))
+            .collect();
+        names.sort();
+        Ok(names)
+    }
+
+    /// Move one attachment to the vault's `.trash`.
+    pub fn trash_attachment(&self, name: &str) -> Result<String> {
+        // Only a bare file name: never let a path escape the folder.
+        if name.contains('/') || name.contains('\\') || name.contains("..") {
+            return Err(Error::msg("That is not an attachment name."));
+        }
+        let relative = format!("{}/attachments/{name}", self.folder.trim_matches('/'));
+        self.trash(relative.trim_start_matches('/'))
+    }
+
     /// Everything sitting in the vault's `.trash`, newest first. Parsed just
     /// enough to show a title and a date — a trashed card is not a live card.
     pub fn list_trash(&self) -> Result<Vec<TrashedCard>> {

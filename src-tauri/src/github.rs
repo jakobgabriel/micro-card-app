@@ -188,6 +188,10 @@ impl GitHub {
     }
 }
 
+fn is_markdown(path: &str) -> bool {
+    path.to_lowercase().ends_with(".md")
+}
+
 fn network_error(err: reqwest::Error) -> Error {
     if err.is_timeout() {
         Error::msg("GitHub did not answer in time. Check your connection and try again.")
@@ -232,24 +236,23 @@ impl Remote for GitHub {
             .collect())
     }
 
-    fn read(&self, _path: &str, sha: &str) -> Result<String> {
+    fn read(&self, _path: &str, sha: &str) -> Result<Vec<u8>> {
         let blob = self.get_json(
             &format!(
                 "/repos/{}/{}/git/blobs/{sha}",
                 self.config.owner, self.config.repo
             ),
-            "downloading a card",
+            "downloading a file",
         )?;
         let content = blob
             .get("content")
             .and_then(|c| c.as_str())
             .unwrap_or_default()
+            // GitHub wraps its base64 at 60 characters.
             .replace(['\n', '\r'], "");
-        let bytes = base64::engine::general_purpose::STANDARD
+        base64::engine::general_purpose::STANDARD
             .decode(content)
-            .map_err(|_| Error::msg("A file on GitHub could not be decoded."))?;
-        String::from_utf8(bytes)
-            .map_err(|_| Error::msg("A file on GitHub is not valid text; skipping it."))
+            .map_err(|_| Error::msg("A file on GitHub could not be decoded."))
     }
 
     fn commit(&self, changes: &[Change], message: &str) -> Result<String> {
@@ -262,11 +265,22 @@ impl Remote for GitHub {
         for change in changes {
             match change {
                 Change::Write { path, content } => {
+                    // Text goes up as text so the repository has readable
+                    // diffs; a photo has to be base64.
+                    let payload = match std::str::from_utf8(content) {
+                        Ok(text) if is_markdown(path) => {
+                            serde_json::json!({ "content": text, "encoding": "utf-8" })
+                        }
+                        _ => serde_json::json!({
+                            "content": base64::engine::general_purpose::STANDARD.encode(content),
+                            "encoding": "base64",
+                        }),
+                    };
                     let blob = self.post_json(
                         reqwest::Method::POST,
                         &format!("/repos/{owner}/{repo}/git/blobs"),
-                        serde_json::json!({ "content": content, "encoding": "utf-8" }),
-                        "uploading a card",
+                        payload,
+                        "uploading a file",
                     )?;
                     let sha = blob
                         .get("sha")
@@ -499,9 +513,9 @@ mod tests {
             .to_string();
         let mock = MockApi::start(vec![(200, body)]);
 
-        let text = mock.client().read("Cards/One.md", "bbb").unwrap();
+        let bytes = mock.client().read("Cards/One.md", "bbb").unwrap();
 
-        assert_eq!(text, "Hello, cards!");
+        assert_eq!(bytes, b"Hello, cards!");
         let (_, path, _) = mock.next();
         assert!(path.ends_with("/git/blobs/bbb"), "{path}");
     }
@@ -535,7 +549,7 @@ mod tests {
         let changes = vec![
             Change::Write {
                 path: "Cards/New.md".into(),
-                content: "hello".into(),
+                content: b"hello".to_vec(),
             },
             Change::Delete {
                 path: "Cards/Old.md".into(),
@@ -588,6 +602,59 @@ mod tests {
     }
 
     #[test]
+    fn a_photo_goes_up_as_base64_while_a_card_stays_readable_text() {
+        let mock = MockApi::start(vec![
+            (
+                200,
+                serde_json::json!({ "object": { "sha": "parent-sha" } }).to_string(),
+            ),
+            (201, serde_json::json!({ "sha": "card-blob" }).to_string()),
+            (201, serde_json::json!({ "sha": "photo-blob" }).to_string()),
+            (
+                200,
+                serde_json::json!({ "tree": { "sha": "base-tree" } }).to_string(),
+            ),
+            (201, serde_json::json!({ "sha": "tree-sha" }).to_string()),
+            (201, serde_json::json!({ "sha": "commit-sha" }).to_string()),
+            (
+                200,
+                serde_json::json!({ "object": { "sha": "commit-sha" } }).to_string(),
+            ),
+        ]);
+
+        // Bytes that are not valid UTF-8 — a JPEG header.
+        let photo = vec![0xFFu8, 0xD8, 0xFF, 0xE0];
+        let changes = vec![
+            Change::Write {
+                path: "Cards/Note.md".into(),
+                content: "# A card\n".as_bytes().to_vec(),
+            },
+            Change::Write {
+                path: "Cards/attachments/beach.jpg".into(),
+                content: photo.clone(),
+            },
+        ];
+        mock.client().commit(&changes, "with a photo").unwrap();
+
+        mock.next(); // branch ref
+
+        let (_, _, card_body) = mock.next();
+        assert!(card_body.contains("\"encoding\":\"utf-8\""), "{card_body}");
+        assert!(
+            card_body.contains("# A card"),
+            "a card stays readable: {card_body}"
+        );
+
+        let (_, _, photo_body) = mock.next();
+        assert!(
+            photo_body.contains("\"encoding\":\"base64\""),
+            "{photo_body}"
+        );
+        let encoded = base64::engine::general_purpose::STANDARD.encode(&photo);
+        assert!(photo_body.contains(&encoded), "{photo_body}");
+    }
+
+    #[test]
     fn an_empty_repository_gets_its_branch_created() {
         let mock = MockApi::start(vec![
             // No branch yet.
@@ -606,7 +673,7 @@ mod tests {
 
         let changes = vec![Change::Write {
             path: "Cards/First.md".into(),
-            content: "first".into(),
+            content: b"first".to_vec(),
         }];
         assert_eq!(
             mock.client().commit(&changes, "first").unwrap(),

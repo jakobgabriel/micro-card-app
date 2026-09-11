@@ -63,6 +63,10 @@ Before pushing, Micro Card pulls. For every file it compares three things:
 | unchanged | deleted | deleted here |
 | deleted | changed | **pulled back** — someone's work is never dropped |
 
+The same table governs an attached photo; a conflicted one keeps its
+extension, so `beach.jpg` becomes `beach (from GitHub 2026-09-11 14-32).jpg`
+rather than something no viewer will open.
+
 "Unchanged" means *the same as at the end of the last sync*, recorded in
 `sync-state.json` as the Git blob sha of each file. Micro Card computes that
 sha locally (`sha1("blob <len>\0<content>")`), so a file that already matches
@@ -100,10 +104,21 @@ mirrored to*. Pointing the app at a vault that is itself a Git repository, and
 connecting the same repository here, means the phone and the desktop commit to
 the same history.
 
+## What travels
+
+Cards, and the photos they embed. A card that says `![[beach.jpg]]` is useless
+without `beach.jpg`, so `attachments/` syncs alongside the Markdown: text goes
+up as text, so the repository keeps readable diffs, and a photo goes up as
+base64, because that is what the Git API takes.
+
+Other files you keep in the same folder are none of the app's business and are
+left alone, as is anything starting with a dot.
+
 ## Limits worth knowing
 
-- Sync covers the cards folder and Markdown files. Images and attachments are
-  left alone.
+- Files over 20 MB are skipped. GitHub's API would take more, but a repository
+  is not a photo library, and one oversized file failing would take the whole
+  commit with it.
 - Every sync is a full listing of the folder's tree plus the blobs that
   changed, which is comfortably inside GitHub's rate limits for personal use,
   but it is not designed for tens of thousands of cards.

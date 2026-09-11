@@ -10,6 +10,7 @@ import { demoInvoke, isDemoMode } from "./demo";
 import type {
   Attachment,
   BulkEdit,
+  OrphanedAttachment,
   BulkResult,
   Card,
   CardDraft,
@@ -117,6 +118,8 @@ export const api = {
   // Attachments
   addAttachment: (filename: string, data: number[]) =>
     call<Attachment>("add_attachment", { filename, data }),
+  unusedAttachments: () => call<OrphanedAttachment[]>("unused_attachments"),
+  tidyAttachments: () => call<BulkResult>("tidy_attachments"),
 };
 
 /** Human-readable message for anything thrown by a command. */

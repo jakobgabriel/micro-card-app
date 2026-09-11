@@ -28,7 +28,7 @@ on your phone until you decide otherwise.
 | **Capture in seconds** | One big text box, focused before the keyboard finishes animating. Type, hit save. Everything else — kind, tags, deck — is optional and one tap away. A formatting bar means nobody has to know what `**` does. |
 | **Five kinds of card** | Note, Q & A, Idea, Quote, To-do. Same file format; only the presentation and whether it comes back for review differ. |
 | **Real Obsidian sync** | The vault is the database. Micro Card reads and writes the `.md` files directly, so an edit in Obsidian shows up here and vice versa. |
-| **GitHub repository sync** | Or keep the cards in a Git repository: one commit per sync, conflicts resolved by keeping both versions, and full history for free. See [`docs/github-sync.md`](docs/github-sync.md). |
+| **GitHub repository sync** | Or keep the cards — and their photos — in a Git repository: one commit per sync, conflicts resolved by keeping both versions, and full history for free. See [`docs/github-sync.md`](docs/github-sync.md). |
 | **Spaced repetition** | Q & A cards come back when you are about to forget them. Three grades, each showing when the card returns — and an undo for the mis-tap. |
 | **Study what you choose** | Review everything due, or one deck or tag — including cards that are not due yet, for the night before an exam. |
 | **Find things again** | Search with `#tags` and `deck:name`, browse decks and tags, rename either everywhere at once, follow `[[wikilinks]]`, and see what links back. |
@@ -36,7 +36,7 @@ on your phone until you decide otherwise.
 | **Bulk tidying** | Swipe a card to star or delete it, or hold one to select a batch and tag, star or delete the lot — with one undo for the batch. |
 | **Nothing is final** | Deleted cards wait in *Recently deleted* until you empty the trash, and near-duplicates can be merged into one card rather than hunted down later. |
 | **Progress you can see** | A twelve-week activity grid, a two-week forecast of what falls due, how much is actually sticking, a card resurfaced each day, and an optional daily reminder. |
-| **Photos on cards** | Attach a whiteboard or a book page; the file lands next to the cards as `![[photo.jpg]]`, so Obsidian shows it too. |
+| **Photos on cards** | Attach a whiteboard or a book page; the file lands next to the cards as `![[photo.jpg]]`, so Obsidian shows it too — and it syncs with the card, to a vault or a repository. |
 | **Links that write themselves** | Type `[[` and pick a card — no remembering what you called it. |
 | **Templates** | Book note, meeting, vocabulary, person, recipe: a shape to fill in when a blank box is the wrong start. |
 | **Take it elsewhere** | Export as a readable Markdown document, a CSV that Anki imports, or JSON with the review schedules intact. |
@@ -194,8 +194,8 @@ src-tauri/src/           Rust core
 
 ```sh
 npm run build                         # typecheck + production bundle
-npm test                              # 21 tests over the shared helpers
-cd src-tauri && cargo test            # 64 tests, no network required
+npm test                              # 28 tests over the shared helpers
+cd src-tauri && cargo test            # 72 tests, no network required
 cd src-tauri && cargo clippy --all-targets -- -D warnings
 ```
 

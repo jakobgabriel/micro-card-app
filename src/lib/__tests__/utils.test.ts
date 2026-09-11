@@ -3,7 +3,9 @@ import { describe, expect, it } from "vitest";
 import type { Card } from "../types";
 import {
   backlinks,
+  highlightRuns,
   linkNameFor,
+  previewAround,
   pendingLink,
   suggestLinks,
   extractInlineTags,
@@ -173,5 +175,49 @@ describe("wikilink autocomplete", () => {
 
   it("links by file name, which is what Obsidian resolves", () => {
     expect(linkNameFor(card({ title: "Shown", path: "Cards/On disk.md" }))).toBe("On disk");
+  });
+});
+
+describe("search highlighting", () => {
+  it("marks the matching runs and leaves the rest alone", () => {
+    expect(highlightRuns("the quick fox", "quick")).toEqual([
+      { text: "the ", match: false },
+      { text: "quick", match: true },
+      { text: " fox", match: false },
+    ]);
+  });
+
+  it("matches regardless of case, keeping the original text", () => {
+    const runs = highlightRuns("Quick things", "quick");
+    expect(runs[0]).toEqual({ text: "Quick", match: true });
+  });
+
+  it("merges overlapping matches rather than nesting them", () => {
+    const runs = highlightRuns("abcabc", "abc bca");
+    expect(runs).toEqual([{ text: "abcabc", match: true }]);
+  });
+
+  it("ignores operators, which are not body text", () => {
+    expect(highlightRuns("about physics", "#physics")).toEqual([
+      { text: "about physics", match: false },
+    ]);
+  });
+
+  it("returns the text unchanged when nothing matches", () => {
+    expect(highlightRuns("nothing here", "absent")).toEqual([
+      { text: "nothing here", match: false },
+    ]);
+  });
+
+  it("windows a long card around the first hit", () => {
+    const text = `${"filler ".repeat(40)}needle at the end`;
+    const preview = previewAround(text, "needle");
+    expect(preview.startsWith("…")).toBe(true);
+    expect(preview).toContain("needle");
+    expect(preview.length).toBeLessThan(text.length);
+  });
+
+  it("leaves a short card alone", () => {
+    expect(previewAround("short needle", "needle")).toBe("short needle");
   });
 });

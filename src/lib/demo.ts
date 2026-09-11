@@ -698,6 +698,12 @@ export async function demoInvoke<T>(
     case "add_attachment":
       throw new Error("Attaching files needs the installed app.");
 
+    case "unused_attachments":
+      return done([]) as Promise<T>;
+
+    case "tidy_attachments":
+      return done({ changed: 0 }) as Promise<T>;
+
     case "resurfaced_card": {
       const now = Date.now();
       const older = state.cards.filter(

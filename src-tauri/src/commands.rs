@@ -902,6 +902,58 @@ mod tests {
     }
 
     #[test]
+    fn an_attachment_a_card_still_embeds_is_not_called_unused() {
+        let state = scratch_state();
+        let vault = state.vault().unwrap();
+        vault.add_attachment("kept.jpg", b"bytes").unwrap();
+        vault.add_attachment("orphan.jpg", b"bytes").unwrap();
+        save_draft(&state, draft("A card with ![[kept.jpg]] in it")).unwrap();
+
+        let unused = unused_inner(&state).unwrap();
+
+        assert_eq!(unused.len(), 1);
+        assert_eq!(unused[0].name, "orphan.jpg");
+        std::fs::remove_dir_all(&state.data_dir).ok();
+    }
+
+    #[test]
+    fn tidying_trashes_the_orphans_and_leaves_the_rest() {
+        let state = scratch_state();
+        let vault = state.vault().unwrap();
+        vault.add_attachment("kept.jpg", b"bytes").unwrap();
+        vault.add_attachment("orphan.jpg", b"bytes").unwrap();
+        save_draft(&state, draft("Still using ![[kept.jpg]] here")).unwrap();
+
+        let result = tidy_inner(&state).unwrap();
+
+        assert_eq!(result.changed, 1);
+        assert_eq!(vault.list_attachments().unwrap(), vec!["kept.jpg"]);
+        // Trashed rather than destroyed, like everything else.
+        assert_eq!(
+            vault.list_trash().unwrap().len(),
+            0,
+            "a photo is not a card"
+        );
+        assert!(state
+            .data_dir
+            .join("Local Cards/.trash/orphan.jpg")
+            .exists());
+        std::fs::remove_dir_all(&state.data_dir).ok();
+    }
+
+    #[test]
+    fn an_attachment_name_can_never_walk_out_of_its_folder() {
+        let state = scratch_state();
+        let err = state
+            .vault()
+            .unwrap()
+            .trash_attachment("../../settings.json")
+            .unwrap_err();
+        assert!(err.to_string().contains("not an attachment name"));
+        std::fs::remove_dir_all(&state.data_dir).ok();
+    }
+
+    #[test]
     fn an_empty_card_is_refused_with_a_sentence_a_user_can_read() {
         let state = scratch_state();
         let err = save_draft(&state, draft("   ")).unwrap_err();
@@ -1909,4 +1961,74 @@ pub fn add_attachment(
         name,
         path: path.to_string_lossy().to_string(),
     })
+}
+
+/// An attachment no card refers to any more.
+#[derive(Debug, Serialize)]
+pub struct OrphanedAttachment {
+    pub name: String,
+    pub size_bytes: u64,
+}
+
+/// Find attachments nothing links to.
+///
+/// Deleting a card leaves its photo behind — harmless until the folder is
+/// syncing to a repository, at which point it is dead weight forever.
+#[tauri::command]
+pub fn unused_attachments(state: State<'_, AppState>) -> Result<Vec<OrphanedAttachment>> {
+    unused_inner(&state)
+}
+
+pub fn unused_inner(state: &AppState) -> Result<Vec<OrphanedAttachment>> {
+    let vault = state.vault()?;
+    let referenced = referenced_attachments(&state.cards_snapshot());
+    let dir = vault.attachments_dir();
+
+    Ok(vault
+        .list_attachments()?
+        .into_iter()
+        .filter(|name| !referenced.contains(&name.to_lowercase()))
+        .map(|name| {
+            let size_bytes = std::fs::metadata(dir.join(&name))
+                .map(|m| m.len())
+                .unwrap_or(0);
+            OrphanedAttachment { name, size_bytes }
+        })
+        .collect())
+}
+
+/// Every file name a card points at, lowercased for comparison.
+fn referenced_attachments(cards: &[Card]) -> std::collections::BTreeSet<String> {
+    cards
+        .iter()
+        .flat_map(|card| {
+            // `links` holds both `[[card]]` and `![[photo.jpg]]` targets; only
+            // the ones that look like files matter here.
+            markdown::wikilinks(&card.front)
+                .into_iter()
+                .chain(markdown::wikilinks(&card.back))
+        })
+        .map(|target| target.trim().to_lowercase())
+        .collect()
+}
+
+/// Move unused attachments to the trash, where they can still be recovered.
+#[tauri::command]
+pub fn tidy_attachments(state: State<'_, AppState>) -> Result<BulkResult> {
+    tidy_inner(&state)
+}
+
+pub fn tidy_inner(state: &AppState) -> Result<BulkResult> {
+    let vault = state.vault()?;
+    let referenced = referenced_attachments(&state.cards_snapshot());
+    let mut changed = 0;
+    for name in vault.list_attachments()? {
+        if referenced.contains(&name.to_lowercase()) {
+            continue;
+        }
+        if vault.trash_attachment(&name).is_ok() {
+            changed += 1;
+        }
+    }
+    Ok(BulkResult { changed })
 }

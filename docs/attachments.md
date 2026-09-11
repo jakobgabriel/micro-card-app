@@ -45,12 +45,26 @@ An image that cannot be loaded — no vault access, a file that did not travel
 with the card, a browser preview — renders as a small labelled placeholder
 rather than a broken image icon.
 
-## The limit worth knowing
+## Attachments and sync
 
-**GitHub sync does not carry attachments.** The sync engine deals in Markdown
-files; a photo stays on the device that took it. On a vault synced by Obsidian
-Sync, Syncthing or any folder sync, attachments travel like any other file.
+They travel. On a vault synced by Obsidian Sync, Syncthing or any folder sync,
+an attachment is just another file in the folder. Through
+[GitHub sync](github-sync.md) it is committed alongside the card — as a base64
+blob, since a JPEG is not text — so a card and its photo arrive together.
 
-If a card arrives on another device without its photo, the card is intact and
-the embed shows the placeholder with the file name — enough to know what is
-missing.
+Files over 20 MB are skipped rather than risking the commit; everything else in
+`attachments/` goes.
+
+If a card ever does arrive without its photo, the card is intact and the embed
+shows a placeholder with the file name — enough to know what is missing.
+
+## Tidying up
+
+Deleting a card does not delete the photo it embedded: the file might be used
+by another card, and guessing wrong would destroy something. **Settings → Your
+cards → Unused photos** finds the files nothing points at any more, shows how
+much space they take, and moves them to the vault's `.trash` — recoverable,
+like every other delete in the app.
+
+This matters most with a repository connected, where an orphaned photo is dead
+weight in the history forever.

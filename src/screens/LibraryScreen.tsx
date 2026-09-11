@@ -351,6 +351,7 @@ export function LibraryScreen({
                   onOpen={selecting ? () => toggle(card.id) : onOpenCard}
                   onStar={(target) => void toggleStar(target)}
                   onDelete={(target) => void removeOne(target)}
+                  query={query}
                 />
               </div>
             ))}

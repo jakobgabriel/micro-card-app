@@ -184,6 +184,11 @@ export interface Attachment {
   path: string;
 }
 
+export interface OrphanedAttachment {
+  name: string;
+  size_bytes: number;
+}
+
 export interface VaultCandidate {
   name: string;
   path: string;
