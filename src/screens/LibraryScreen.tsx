@@ -5,7 +5,9 @@
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  ArrowUpDown,
   CheckCheck,
+  Flame,
   Hash,
   Search,
   SlidersHorizontal,
@@ -23,12 +25,22 @@ import { useStore } from "@/lib/store";
 import type { Card, CardKind } from "@/lib/types";
 import { KIND_STYLE, cn, haptic, isDue, searchCards } from "@/lib/utils";
 
-type Filter = "all" | "due" | "starred" | CardKind;
+type Filter = "all" | "due" | "starred" | "struggling" | CardKind;
+
+type Sort = "recent" | "oldest" | "title" | "hardest";
+
+const SORTS: { value: Sort; label: string }[] = [
+  { value: "recent", label: "Newest first" },
+  { value: "oldest", label: "Oldest first" },
+  { value: "title", label: "A to Z" },
+  { value: "hardest", label: "Hardest first" },
+];
 
 const FILTERS: { value: Filter; label: string }[] = [
   { value: "all", label: "All" },
   { value: "due", label: "Due" },
   { value: "starred", label: "Starred" },
+  { value: "struggling", label: "Struggling" },
   { value: "note", label: KIND_STYLE.note.label },
   { value: "qa", label: KIND_STYLE.qa.label },
   { value: "idea", label: KIND_STYLE.idea.label },
@@ -52,6 +64,8 @@ export function LibraryScreen({
   const [query, setQuery] = useState(initialQuery ?? "");
   const [filter, setFilter] = useState<Filter>("all");
   const [deck, setDeck] = useState<string | null>(null);
+  const [sort, setSort] = useState<Sort>("recent");
+  const [sortOpen, setSortOpen] = useState(false);
   const [selection, setSelection] = useState<string[] | null>(null);
   const [tagSheet, setTagSheet] = useState(false);
   const [bulkTag, setBulkTag] = useState("");
@@ -73,9 +87,18 @@ export function LibraryScreen({
     if (deck) result = result.filter((c) => (c.deck ?? "Inbox") === deck);
     if (filter === "due") result = result.filter(isDue);
     else if (filter === "starred") result = result.filter((c) => c.starred);
+    // "Struggling" is the leech list: cards forgotten more than once.
+    else if (filter === "struggling") result = result.filter((c) => c.review.lapses >= 2);
     else if (filter !== "all") result = result.filter((c) => c.kind === filter);
-    return result;
-  }, [cards, query, filter, deck]);
+
+    const sorted = [...result];
+    const time = (iso: string) => new Date(iso).getTime();
+    if (sort === "recent") sorted.sort((a, b) => time(b.updated) - time(a.updated));
+    else if (sort === "oldest") sorted.sort((a, b) => time(a.created) - time(b.created));
+    else if (sort === "title") sorted.sort((a, b) => a.title.localeCompare(b.title));
+    else sorted.sort((a, b) => b.review.lapses - a.review.lapses || time(b.updated) - time(a.updated));
+    return sorted;
+  }, [cards, query, filter, deck, sort]);
 
   const filtersActive = filter !== "all" || deck !== null;
   const selecting = selection !== null;
@@ -211,6 +234,7 @@ export function LibraryScreen({
                   className="shrink-0 px-3 py-1.5"
                 >
                   {option.value === "starred" && <Star className="h-3.5 w-3.5" />}
+                  {option.value === "struggling" && <Flame className="h-3.5 w-3.5" />}
                   {option.label}
                 </Chip>
               ))}
@@ -248,17 +272,60 @@ export function LibraryScreen({
             icon={<Search className="h-7 w-7" />}
             title={query || filtersActive ? "Nothing matches" : "No cards yet"}
             description={
-              query || filtersActive
-                ? "Try fewer words, or clear the filters above. Search also understands #tags and deck:name."
-                : "Capture your first card and it will show up here."
+              filter === "struggling"
+                ? "Nothing here is giving you trouble — this fills up with cards you have forgotten more than once."
+                : query || filtersActive
+                  ? "Try fewer words, or clear the filters above. Search also understands #tags and deck:name."
+                  : "Capture your first card and it will show up here."
             }
           />
         ) : (
           <>
-            <p className="px-1 pb-1 text-xs font-medium text-muted">
-              {visible.length} card{visible.length === 1 ? "" : "s"}
-              {!selecting && visible.length > 1 && " · swipe to star or delete, hold to select"}
-            </p>
+            <div className="flex items-center gap-2 px-1 pb-1">
+              <p className="min-w-0 flex-1 truncate text-xs font-medium text-muted">
+                {visible.length} card{visible.length === 1 ? "" : "s"}
+                {!selecting && visible.length > 1 && " · swipe to star or delete"}
+              </p>
+              {!selecting && (
+                <div className="relative">
+                  <button
+                    onClick={() => setSortOpen((open) => !open)}
+                    className="flex items-center gap-1 rounded-full bg-raised px-2.5 py-1 text-xs font-semibold text-muted active:scale-95"
+                  >
+                    <ArrowUpDown className="h-3.5 w-3.5" />
+                    {SORTS.find((s) => s.value === sort)?.label}
+                  </button>
+                  {sortOpen && (
+                    <>
+                      {/* Tapping anywhere else closes the menu. */}
+                      <button
+                        aria-hidden
+                        tabIndex={-1}
+                        onClick={() => setSortOpen(false)}
+                        className="fixed inset-0 z-10 cursor-default"
+                      />
+                      <div className="absolute right-0 top-8 z-20 w-40 overflow-hidden rounded-2xl border border-line bg-surface shadow-lift animate-fade-in">
+                        {SORTS.map((option) => (
+                          <button
+                            key={option.value}
+                            onClick={() => {
+                              setSort(option.value);
+                              setSortOpen(false);
+                            }}
+                            className={cn(
+                              "block w-full border-b border-line px-3 py-2.5 text-left text-sm last:border-0 active:bg-raised",
+                              sort === option.value ? "font-bold text-brand" : "text-ink",
+                            )}
+                          >
+                            {option.label}
+                          </button>
+                        ))}
+                      </div>
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
             {visible.map((card) => (
               <div
                 key={card.id}

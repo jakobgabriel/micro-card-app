@@ -205,12 +205,19 @@ export function Review({
             <span className="chip mb-3 self-start bg-raised text-muted">{current.deck}</span>
           )}
 
-          <Markdown text={current.front} className="text-[19px] font-semibold" />
+          <Markdown
+            text={current.front}
+            className="text-[19px] font-semibold"
+            attachmentsDir={library?.attachments_dir}
+          />
 
           {flipped ? (
             <>
               <div className="my-5 h-px bg-line" />
-              <Markdown text={current.back || "_No answer on this card yet._"} />
+              <Markdown
+                text={current.back || "_No answer on this card yet._"}
+                attachmentsDir={library?.attachments_dir}
+              />
             </>
           ) : (
             <p className="absolute inset-x-0 bottom-6 text-center text-sm text-muted">

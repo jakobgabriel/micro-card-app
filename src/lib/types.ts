@@ -107,6 +107,8 @@ export interface Stats {
   kinds: KindStat[];
   activity: DayCount[];
   forecast: DayCount[];
+  /** 0.0–1.0 over the last month, or null until there is enough history. */
+  retention: number | null;
 }
 
 export interface GithubStatus {
@@ -172,7 +174,14 @@ export interface Library {
   stats: Stats;
   settings: Settings;
   vault_root: string;
+  /** Absolute path of the folder holding photos attached to cards. */
+  attachments_dir: string;
   local_mode: boolean;
+}
+
+export interface Attachment {
+  name: string;
+  path: string;
 }
 
 export interface VaultCandidate {

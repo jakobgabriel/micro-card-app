@@ -8,6 +8,7 @@ import { invoke as tauriInvoke } from "@tauri-apps/api/core";
 
 import { demoInvoke, isDemoMode } from "./demo";
 import type {
+  Attachment,
   BulkEdit,
   BulkResult,
   Card,
@@ -112,6 +113,10 @@ export const api = {
 
   // A card worth seeing again
   resurfacedCard: () => call<Card | null>("resurfaced_card"),
+
+  // Attachments
+  addAttachment: (filename: string, data: number[]) =>
+    call<Attachment>("add_attachment", { filename, data }),
 };
 
 /** Human-readable message for anything thrown by a command. */

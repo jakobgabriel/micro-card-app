@@ -135,10 +135,13 @@ export function plainText(markdown: string): string {
   return markdown
     .replace(/```[\s\S]*?```/g, " ")
     .replace(/!\[[^\]]*\]\([^)]*\)/g, " ")
+    // Embedded attachments are not worth showing as text in a preview.
+    .replace(/!\[\[[^\]]+\]\]/g, " ")
     .replace(/\[\[([^\]|]+)(\|[^\]]+)?\]\]/g, "$1")
     .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
     .replace(/^#{1,6}\s+/gm, "")
     .replace(/[*_`>]/g, "")
+    .replace(/\s+/g, " ")
     .trim();
 }
 
@@ -229,4 +232,45 @@ export function prefixLines(
     text: value.slice(0, lineStart) + updated + value.slice(sliceEnd),
     cursor: lineStart + updated.length,
   };
+}
+
+/**
+ * Is the caret sitting inside an unfinished `[[wikilink]]`?
+ *
+ * Returns the text typed so far and where the `[[` started, so the editor can
+ * offer matching cards and replace the right span when one is picked.
+ */
+export function pendingLink(
+  text: string,
+  caret: number,
+): { query: string; start: number } | null {
+  const before = text.slice(0, caret);
+  const start = before.lastIndexOf("[[");
+  if (start === -1) return null;
+  // Already closed, or the caret moved past the link.
+  const between = before.slice(start + 2);
+  if (between.includes("]]") || between.includes("\n")) return null;
+  return { query: between, start };
+}
+
+/** Rank cards for the link picker: title matches first, then anything else. */
+export function suggestLinks(cards: Card[], query: string, limit = 6): Card[] {
+  const needle = query.trim().toLowerCase();
+  if (!needle) return cards.slice(0, limit);
+  const scored = cards
+    .map((card) => {
+      const title = card.title.toLowerCase();
+      if (title.startsWith(needle)) return { card, score: 0 };
+      if (title.includes(needle)) return { card, score: 1 };
+      if (card.front.toLowerCase().includes(needle)) return { card, score: 2 };
+      return null;
+    })
+    .filter((hit): hit is { card: Card; score: number } => hit !== null);
+  scored.sort((a, b) => a.score - b.score);
+  return scored.slice(0, limit).map((hit) => hit.card);
+}
+
+/** The name a `[[wikilink]]` should use for a card: its file name. */
+export function linkNameFor(card: Card): string {
+  return card.path.split("/").pop()?.replace(/\.md$/, "") || card.title;
 }

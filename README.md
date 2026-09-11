@@ -35,7 +35,10 @@ on your phone until you decide otherwise.
 | **Share into it** | "Share → Micro Card" from any Android app drops the text straight into the editor, with the page title as the first line. |
 | **Bulk tidying** | Swipe a card to star or delete it, or hold one to select a batch and tag, star or delete the lot — with one undo for the batch. |
 | **Nothing is final** | Deleted cards wait in *Recently deleted* until you empty the trash, and near-duplicates can be merged into one card rather than hunted down later. |
-| **Progress you can see** | A twelve-week activity grid, a two-week forecast of what falls due, a card resurfaced each day, and an optional daily reminder. |
+| **Progress you can see** | A twelve-week activity grid, a two-week forecast of what falls due, how much is actually sticking, a card resurfaced each day, and an optional daily reminder. |
+| **Photos on cards** | Attach a whiteboard or a book page; the file lands next to the cards as `![[photo.jpg]]`, so Obsidian shows it too. |
+| **Links that write themselves** | Type `[[` and pick a card — no remembering what you called it. |
+| **Templates** | Book note, meeting, vocabulary, person, recipe: a shape to fill in when a blank box is the wrong start. |
 | **Take it elsewhere** | Export as a readable Markdown document, a CSV that Anki imports, or JSON with the review schedules intact. |
 | **Nothing to lose** | Drafts survive a crash, deletes are undoable and land in the vault's `.trash`, near-duplicates are flagged before you save, and frontmatter written by other plugins is preserved. |
 | **Works before setup** | No vault, no repo, no account? Start capturing anyway. Connect either later and every card moves across. |
@@ -61,9 +64,10 @@ rename — so a half-written card can never reach your vault.
 
 See [`docs/card-format.md`](docs/card-format.md) for the file format,
 [`docs/obsidian-sync.md`](docs/obsidian-sync.md) for the file-level behaviour,
-[`docs/github-sync.md`](docs/github-sync.md) for the repository sync, and
+[`docs/github-sync.md`](docs/github-sync.md) for the repository sync,
 [`docs/sharing-and-trash.md`](docs/sharing-and-trash.md) for the Android share
-target, the trash and merging duplicates.
+target, the trash and merging duplicates, and
+[`docs/attachments.md`](docs/attachments.md) for photos on cards.
 
 ## Sync with a GitHub repository
 
@@ -156,7 +160,8 @@ src-tauri/src/           Rust core
 
 ```sh
 npm run build                         # typecheck + production bundle
-cd src-tauri && cargo test            # 59 tests, no network required
+npm test                              # 21 tests over the shared helpers
+cd src-tauri && cargo test            # 64 tests, no network required
 cd src-tauri && cargo clippy --all-targets -- -D warnings
 ```
 

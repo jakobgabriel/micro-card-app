@@ -3,7 +3,7 @@
  * what is coming. Deliberately small — three charts, no dashboard.
  */
 import { useMemo } from "react";
-import { ArrowLeft, CalendarDays, Flame, Layers, TrendingUp } from "lucide-react";
+import { ArrowLeft, Brain, CalendarDays, Flame, Layers, TrendingUp } from "lucide-react";
 
 import { IconButton } from "@/components/ui";
 import { useStore } from "@/lib/store";
@@ -52,6 +52,50 @@ export function Stats({ onBack }: { onBack: () => void }) {
           hint={stats.captured_today > 0 ? `+${stats.captured_today} today` : undefined}
         />
       </div>
+
+      {stats.retention !== null && (
+        <Section title="How well it is sticking" icon={<Brain className="h-4 w-4" />}>
+          <div className="flex items-center gap-4">
+            <div className="relative h-16 w-16 shrink-0">
+              <svg viewBox="0 0 36 36" className="h-full w-full -rotate-90">
+                <circle
+                  cx="18"
+                  cy="18"
+                  r="15.5"
+                  fill="none"
+                  strokeWidth="4"
+                  className="stroke-line"
+                />
+                <circle
+                  cx="18"
+                  cy="18"
+                  r="15.5"
+                  fill="none"
+                  strokeWidth="4"
+                  strokeLinecap="round"
+                  strokeDasharray={97.4}
+                  strokeDashoffset={97.4 * (1 - stats.retention)}
+                  className={cn(
+                    "transition-[stroke-dashoffset] duration-700",
+                    stats.retention >= 0.8 ? "stroke-brand" : "stroke-warn",
+                  )}
+                />
+              </svg>
+              <span className="absolute inset-0 grid place-items-center text-sm font-black tabular-nums">
+                {Math.round(stats.retention * 100)}%
+              </span>
+            </div>
+            <p className="text-sm leading-relaxed text-muted">
+              {stats.retention >= 0.8
+                ? "You recall most cards when they come back — the intervals are about right."
+                : "A lot of cards are slipping. Shorter cards, or more sessions, usually fixes it."}{" "}
+              <span className="block pt-1 text-xs">
+                Share of the last month's reviews you got right.
+              </span>
+            </p>
+          </div>
+        </Section>
+      )}
 
       <Section title="Last twelve weeks" icon={<CalendarDays className="h-4 w-4" />}>
         <div className="flex gap-1">

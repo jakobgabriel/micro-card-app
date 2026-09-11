@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use chrono::{Local, Utc};
 use serde::{Deserialize, Serialize};
-use tauri::State;
+use tauri::{AppHandle, Manager, State};
 
 use crate::error::{Error, Result};
 use crate::github::{GitHub, RepoConfig, RepoInfo};
@@ -27,7 +27,23 @@ pub struct Library {
     /// Absolute path currently in use, shown in Settings so people can find
     /// their files with a file manager.
     pub vault_root: String,
+    /// Absolute path of the attachments folder, so the UI can turn
+    /// `![[photo.jpg]]` into something the webview will load.
+    pub attachments_dir: String,
     pub local_mode: bool,
+}
+
+/// Let the webview read images out of the current cards folder.
+///
+/// The vault is chosen at runtime, so this has to be re-granted whenever it
+/// changes — otherwise photos attached before switching vaults would render
+/// and ones attached after would not.
+pub fn allow_attachments(app: &AppHandle, state: &AppState) {
+    if let Ok(vault) = state.vault() {
+        let _ = app
+            .asset_protocol_scope()
+            .allow_directory(vault.attachments_dir(), true);
+    }
 }
 
 fn library(state: &AppState) -> Result<Library> {
@@ -39,6 +55,7 @@ fn library(state: &AppState) -> Result<Library> {
         local_mode: settings.vault_path.is_none(),
         settings,
         vault_root: vault.cards_dir().to_string_lossy().to_string(),
+        attachments_dir: vault.attachments_dir().to_string_lossy().to_string(),
     })
 }
 
@@ -190,8 +207,13 @@ pub struct VaultChoice {
 /// folder cannot be written, which on Android usually means the storage
 /// permission has not been granted yet.
 #[tauri::command]
-pub fn set_vault(state: State<'_, AppState>, choice: VaultChoice) -> Result<Library> {
+pub fn set_vault(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    choice: VaultChoice,
+) -> Result<Library> {
     apply_vault(&state, choice)?;
+    allow_attachments(&app, &state);
     state.refresh()?;
     library(&state)
 }
@@ -235,7 +257,7 @@ fn apply_vault(state: &AppState, choice: VaultChoice) -> Result<()> {
 /// Start capturing straight away, without choosing a vault. Files land in the
 /// app's own folder and can be connected to a vault later without data loss.
 #[tauri::command]
-pub fn use_local_vault(state: State<'_, AppState>) -> Result<Library> {
+pub fn use_local_vault(app: AppHandle, state: State<'_, AppState>) -> Result<Library> {
     {
         let mut settings = state
             .settings
@@ -245,6 +267,7 @@ pub fn use_local_vault(state: State<'_, AppState>) -> Result<Library> {
         settings.onboarded = true;
         state.save_settings(&settings)?;
     }
+    allow_attachments(&app, &state);
     state.refresh()?;
     library(&state)
 }
@@ -253,6 +276,7 @@ pub fn use_local_vault(state: State<'_, AppState>) -> Result<Library> {
 /// the upgrade path for people who try the app first and install Obsidian later.
 #[tauri::command]
 pub fn move_local_cards_to_vault(
+    app: AppHandle,
     state: State<'_, AppState>,
     choice: VaultChoice,
 ) -> Result<Library> {
@@ -261,6 +285,7 @@ pub fn move_local_cards_to_vault(
     let pending = local.scan().unwrap_or_default();
 
     apply_vault(&state, choice)?;
+    allow_attachments(&app, &state);
 
     let target = state.vault()?;
     for mut card in pending {
@@ -451,7 +476,7 @@ pub fn apply_grade(state: &AppState, id: String, grade: Grade) -> Result<Card> {
     state.vault()?.save(&mut card)?;
 
     if let Ok(mut journal) = state.journal.write() {
-        journal.record_review();
+        journal.record_review(grade != Grade::Again);
     }
     let _ = state.save_journal();
     state.refresh()?;
@@ -1326,11 +1351,16 @@ pub fn restore_review_inner(state: &AppState, id: String, review: Review) -> Res
         .into_iter()
         .find(|c| c.id == id)
         .ok_or(Error::NotFound(id))?;
+
+    // The grade being undone counted as a lapse if it pushed the counter up;
+    // this has to be read before the old schedule is put back.
+    let was_forgotten = review.lapses < card.review.lapses;
+
     card.review = review;
     card.updated = model::now();
     state.vault()?.save(&mut card)?;
     if let Ok(mut journal) = state.journal.write() {
-        journal.undo_review();
+        journal.undo_review(!was_forgotten);
     }
     let _ = state.save_journal();
     state.refresh()?;
@@ -1837,4 +1867,46 @@ pub fn resurface_inner(state: &AppState) -> Option<Card> {
         .num_days()
         .unsigned_abs() as usize;
     Some(candidates[seed % candidates.len()].clone())
+}
+
+// ---------------------------------------------------------------------------
+// Attachments
+// ---------------------------------------------------------------------------
+
+/// A file stored next to the cards.
+#[derive(Debug, Serialize)]
+pub struct Attachment {
+    /// File name to write inside `![[...]]`.
+    pub name: String,
+    /// Absolute path, for rendering it.
+    pub path: String,
+}
+
+/// Save a picked photo or file into the vault and return the name to link to.
+///
+/// The bytes come from the frontend rather than a path, because on Android the
+/// file picker hands back a `content://` URI that only the platform can read —
+/// the JS side reads it through the fs plugin and passes the contents here.
+#[tauri::command]
+pub fn add_attachment(
+    state: State<'_, AppState>,
+    filename: String,
+    data: Vec<u8>,
+) -> Result<Attachment> {
+    if data.is_empty() {
+        return Err(Error::msg("That file is empty."));
+    }
+    // 25 MB is far more than a phone photo and still safe to hold in memory.
+    if data.len() > 25 * 1024 * 1024 {
+        return Err(Error::msg(
+            "That file is too large to attach (25 MB limit).",
+        ));
+    }
+    let vault = state.vault()?;
+    let name = vault.add_attachment(&filename, &data)?;
+    let path = vault.attachments_dir().join(&name);
+    Ok(Attachment {
+        name,
+        path: path.to_string_lossy().to_string(),
+    })
 }

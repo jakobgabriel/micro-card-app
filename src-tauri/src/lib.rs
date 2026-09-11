@@ -20,6 +20,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_fs::init())
         .setup(|app| {
             let data_dir = app
                 .path()
@@ -28,6 +29,12 @@ pub fn run() {
             let state = AppState::load(data_dir);
             // Warm the cache so the first screen paints with real content.
             let _ = state.refresh();
+
+            // Let the webview load images out of the cards folder. The vault
+            // is chosen at runtime, so the scope cannot be declared in the
+            // config; it is granted here and again whenever the vault changes.
+            commands::allow_attachments(app.handle(), &state);
+
             app.manage(state);
             Ok(())
         })
@@ -70,6 +77,7 @@ pub fn run() {
             commands::export_cards,
             commands::merge_cards,
             commands::resurfaced_card,
+            commands::add_attachment,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Micro Card");

@@ -6,19 +6,23 @@
  * it as React nodes. Nothing is injected as HTML, so a pasted card can never
  * script the app.
  */
+import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
+import { ImageOff } from "lucide-react";
 
+import { attachmentUrl, isImage } from "@/lib/attachments";
 import { cn } from "@/lib/utils";
 
 function inline(
   text: string,
   keyPrefix: string,
   onLink?: (target: string) => void,
+  attachmentsDir?: string,
 ): ReactNode[] {
   const nodes: ReactNode[] = [];
   // One pass over the interesting inline constructs, in priority order.
   const pattern =
-    /(`[^`]+`)|(\*\*[^*]+\*\*)|(\*[^*]+\*|_[^_]+_)|(\[\[[^\]]+\]\])|((?:^|\s)#[\w/-]+)/g;
+    /(`[^`]+`)|(!\[\[[^\]]+\]\])|(\*\*[^*]+\*\*)|(\*[^*]+\*|_[^_]+_)|(\[\[[^\]]+\]\])|((?:^|\s)#[\w/-]+)/g;
   let lastIndex = 0;
   let match: RegExpExecArray | null;
   let i = 0;
@@ -28,7 +32,19 @@ function inline(
     const token = match[0];
     const key = `${keyPrefix}-${i++}`;
 
-    if (token.startsWith("`")) {
+    if (token.startsWith("![[")) {
+      // Obsidian's embed syntax. Images are shown; anything else is named.
+      const name = token.slice(3, -2).split("|")[0].trim();
+      nodes.push(
+        isImage(name) ? (
+          <Embedded key={key} name={name} dir={attachmentsDir} />
+        ) : (
+          <span key={key} className="font-medium text-brand">
+            {name}
+          </span>
+        ),
+      );
+    } else if (token.startsWith("`")) {
       nodes.push(
         <code key={key} className="rounded bg-raised px-1.5 py-0.5 font-mono text-[.9em]">
           {token.slice(1, -1)}
@@ -76,11 +92,14 @@ export function Markdown({
   text,
   className,
   onLink,
+  attachmentsDir,
 }: {
   text: string;
   className?: string;
   /** Called when a `[[wikilink]]` is tapped. */
   onLink?: (target: string) => void;
+  /** Absolute path of the attachments folder, for `![[photo.jpg]]` embeds. */
+  attachmentsDir?: string;
 }) {
   const lines = text.split("\n");
   const blocks: ReactNode[] = [];
@@ -93,7 +112,7 @@ export function Markdown({
     const key = `p-${blocks.length}`;
     blocks.push(
       <p key={key} className="leading-relaxed">
-        {inline(paragraph.join(" "), key, onLink)}
+        {inline(paragraph.join(" "), key, onLink, attachmentsDir)}
       </p>,
     );
     paragraph = [];
@@ -107,7 +126,7 @@ export function Markdown({
         {list.map((item, index) => (
           <li key={index} className="flex gap-2 leading-relaxed">
             <span className="mt-[.55em] h-1.5 w-1.5 shrink-0 rounded-full bg-brand" />
-            <span>{inline(item, `${key}-${index}`, onLink)}</span>
+            <span>{inline(item, `${key}-${index}`, onLink, attachmentsDir)}</span>
           </li>
         ))}
       </ul>,
@@ -162,7 +181,7 @@ export function Markdown({
             level <= 2 ? "text-lg" : "text-[15px]",
           )}
         >
-          {inline(heading[2], key, onLink)}
+          {inline(heading[2], key, onLink, attachmentsDir)}
         </p>,
       );
       continue;
@@ -183,7 +202,7 @@ export function Markdown({
           key={key}
           className="border-l-[3px] border-brand/50 pl-3 italic text-muted"
         >
-          {inline(line.replace(/^>\s?/, ""), key, onLink)}
+          {inline(line.replace(/^>\s?/, ""), key, onLink, attachmentsDir)}
         </blockquote>,
       );
       continue;
@@ -213,5 +232,57 @@ export function Markdown({
     <div data-selectable className={cn("space-y-3 text-[15px]", className)}>
       {blocks}
     </div>
+  );
+}
+
+/**
+ * One embedded image.
+ *
+ * The webview cannot load a plain filesystem path, so the URL is resolved
+ * asynchronously through Tauri's asset protocol. Outside the app — a browser
+ * preview, or a card whose photo did not travel with it — a labelled
+ * placeholder is shown rather than a broken image.
+ */
+function Embedded({ name, dir }: { name: string; dir?: string }) {
+  const [url, setUrl] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!dir) {
+      setUrl("");
+      return;
+    }
+    attachmentUrl(dir, name)
+      .then((resolved) => {
+        if (!cancelled) setUrl(resolved);
+      })
+      .catch(() => setUrl(""));
+    return () => {
+      cancelled = true;
+    };
+  }, [dir, name]);
+
+  if (url === null) {
+    return <span className="block h-32 animate-pulse rounded-xl bg-raised" />;
+  }
+
+  if (!url || failed) {
+    return (
+      <span className="flex items-center gap-2 rounded-xl bg-raised px-3 py-2.5 text-sm text-muted">
+        <ImageOff className="h-4 w-4 shrink-0" />
+        {name}
+      </span>
+    );
+  }
+
+  return (
+    <img
+      src={url}
+      alt={name}
+      loading="lazy"
+      onError={() => setFailed(true)}
+      className="my-1 block max-h-80 w-full rounded-xl border border-line object-contain"
+    />
   );
 }

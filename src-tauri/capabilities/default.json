@@ -11,6 +11,7 @@
     "dialog:allow-confirm",
     "opener:allow-open-url",
     "notification:default",
-    "dialog:allow-save"
+    "dialog:allow-save",
+    "fs:allow-read-file"
   ]
 }

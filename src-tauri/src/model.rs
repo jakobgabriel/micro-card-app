@@ -314,6 +314,9 @@ pub struct Stats {
     pub activity: Vec<DayCount>,
     /// How many cards fall due on each of the next fourteen days.
     pub forecast: Vec<DayCount>,
+    /// Share of the last month's reviews that were recalled, 0.0–1.0.
+    /// `None` until there is enough history to be worth showing.
+    pub retention: Option<f32>,
 }
 
 #[derive(Debug, Clone, Serialize)]

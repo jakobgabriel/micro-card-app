@@ -223,6 +223,7 @@ function statsFor(state: DemoState): Stats {
       date: day(i),
       count: forecast.get(day(i)) ?? 0,
     })),
+    retention: state.reviewedToday >= 3 ? 0.86 : null,
   };
 }
 
@@ -236,6 +237,7 @@ function library(state: DemoState): Library {
     vault_root: state.settings.vault_path
       ? `${state.settings.vault_path}/${state.settings.folder}`
       : "Demo storage (browser)",
+    attachments_dir: "",
     local_mode: state.settings.vault_path === null,
   };
 }
@@ -692,6 +694,9 @@ export async function demoInvoke<T>(
         trashed: others.map((o) => ({ id: o.id, trashed_path: `.trash/${o.title}.md` })),
       }) as Promise<T>;
     }
+
+    case "add_attachment":
+      throw new Error("Attaching files needs the installed app.");
 
     case "resurfaced_card": {
       const now = Date.now();

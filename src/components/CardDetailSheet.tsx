@@ -131,7 +131,11 @@ export function CardDetailSheet({ card, onClose, onEdit, onOpen }: Props) {
         </IconButton>
       </div>
 
-      <Markdown text={card.front} onLink={followLink} />
+      <Markdown
+        text={card.front}
+        onLink={followLink}
+        attachmentsDir={library?.attachments_dir}
+      />
 
       {card.kind === "qa" && card.back && (
         <>
@@ -142,7 +146,11 @@ export function CardDetailSheet({ card, onClose, onEdit, onOpen }: Props) {
             </span>
             <div className="h-px flex-1 bg-line" />
           </div>
-          <Markdown text={card.back} onLink={followLink} />
+          <Markdown
+            text={card.back}
+            onLink={followLink}
+            attachmentsDir={library?.attachments_dir}
+          />
         </>
       )}
 

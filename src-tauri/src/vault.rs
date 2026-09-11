@@ -90,6 +90,31 @@ pub fn safe_filename(title: &str) -> String {
     }
 }
 
+/// Keep the extension, clean the rest.
+///
+/// An attachment name ends up inside a `![[wikilink]]`, so `[`, `]` and `|`
+/// have to go as well as the usual filesystem offenders. A leading dot is
+/// dropped too: a card's photo should not be a hidden file.
+pub fn safe_attachment_name(filename: &str) -> String {
+    // Only a non-empty, plausibly short suffix counts as an extension, so
+    // `.hidden` is a dotfile rather than a file with a "hidden" extension.
+    let (stem, extension) = match filename.rsplit_once('.') {
+        Some((stem, ext)) if !stem.is_empty() && !ext.is_empty() && ext.len() <= 8 => {
+            (stem, ext.to_lowercase())
+        }
+        _ => (filename, "bin".to_string()),
+    };
+
+    let stem = safe_filename(stem.trim_start_matches('.'));
+    let stem: String = stem.chars().take(48).collect();
+    let stem = stem.trim();
+    if stem.is_empty() || stem == "Untitled card" {
+        format!("attachment.{extension}")
+    } else {
+        format!("{stem}.{extension}")
+    }
+}
+
 pub struct Vault {
     /// Vault root — the folder Obsidian opens.
     pub root: PathBuf,
@@ -117,6 +142,28 @@ impl Vault {
     pub fn ensure_dirs(&self) -> Result<()> {
         fs::create_dir_all(self.cards_dir())?;
         Ok(())
+    }
+
+    /// Where photos and other files attached to cards are kept.
+    ///
+    /// A sub-folder of the cards folder, so an Obsidian vault sees exactly the
+    /// layout it expects and `![[photo.jpg]]` resolves there without any
+    /// configuration.
+    pub fn attachments_dir(&self) -> PathBuf {
+        self.cards_dir().join("attachments")
+    }
+
+    /// Store a file next to the cards and return the name to link to.
+    pub fn add_attachment(&self, filename: &str, data: &[u8]) -> Result<String> {
+        let dir = self.attachments_dir();
+        fs::create_dir_all(&dir)?;
+        let safe = safe_attachment_name(filename);
+        let target = unique_path(&dir, &safe);
+        fs::write(&target, data)?;
+        Ok(target
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or(safe))
     }
 
     fn abs(&self, rel: &str) -> PathBuf {
@@ -593,6 +640,43 @@ mod tests {
         fs::write(root.join("Projects/Plan.md"), "also not a card").unwrap();
 
         assert!(vault.scan().unwrap().is_empty());
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn attachment_names_keep_their_extension_and_lose_everything_dangerous() {
+        assert_eq!(safe_attachment_name("photo.JPG"), "photo.jpg");
+        assert_eq!(safe_attachment_name("my [note]|pic.png"), "my note pic.png");
+        assert_eq!(safe_attachment_name("noextension"), "noextension.bin");
+        // A dotfile has no extension and must not stay hidden in the vault.
+        assert_eq!(safe_attachment_name(".hidden"), "hidden.bin");
+    }
+
+    #[test]
+    fn two_photos_with_the_same_name_both_survive() {
+        let root = temp_dir("attach");
+        let vault = Vault::new(&root, "Cards");
+        let first = vault.add_attachment("photo.jpg", b"one").unwrap();
+        let second = vault.add_attachment("photo.jpg", b"two").unwrap();
+
+        assert_eq!(first, "photo.jpg");
+        assert_eq!(second, "photo 2.jpg");
+        assert_eq!(
+            fs::read(vault.attachments_dir().join(&first)).unwrap(),
+            b"one"
+        );
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn attachments_do_not_show_up_as_cards() {
+        let root = temp_dir("attach-scan");
+        let vault = Vault::new(&root, "Cards");
+        let mut card = sample("With a photo");
+        vault.save(&mut card).unwrap();
+        vault.add_attachment("photo.jpg", b"binary").unwrap();
+
+        assert_eq!(vault.scan().unwrap().len(), 1);
         fs::remove_dir_all(&root).ok();
     }
 

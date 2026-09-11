@@ -27,6 +27,10 @@ pub struct DayLog {
     pub reviewed: u32,
     #[serde(default)]
     pub captured: u32,
+    /// Reviews where the card was not recalled. The difference between this
+    /// and `reviewed` is what makes a retention figure possible.
+    #[serde(default)]
+    pub forgotten: u32,
 }
 
 impl Journal {
@@ -34,15 +38,40 @@ impl Journal {
         Local::now().date_naive().to_string()
     }
 
-    pub fn record_review(&mut self) {
-        self.days.entry(Self::today_key()).or_default().reviewed += 1;
+    pub fn record_review(&mut self, recalled: bool) {
+        let day = self.days.entry(Self::today_key()).or_default();
+        day.reviewed += 1;
+        if !recalled {
+            day.forgotten += 1;
+        }
+    }
+
+    /// Share of reviews in the last `days` days where the card was recalled.
+    /// `None` until there is enough history for the number to mean anything.
+    pub fn retention(&self, days: i64) -> Option<f32> {
+        let cutoff = Local::now().date_naive() - Duration::days(days);
+        let (reviewed, forgotten) = self
+            .days
+            .iter()
+            .filter(|(key, _)| {
+                key.parse::<NaiveDate>()
+                    .map(|date| date >= cutoff)
+                    .unwrap_or(false)
+            })
+            .fold((0u32, 0u32), |(r, f), (_, log)| {
+                (r + log.reviewed, f + log.forgotten)
+            });
+        (reviewed >= 10).then(|| (reviewed - forgotten) as f32 / reviewed as f32)
     }
 
     /// Take back a review that was just recorded, so undoing a mis-tap during
     /// review does not leave the streak counting work that was reversed.
-    pub fn undo_review(&mut self) {
+    pub fn undo_review(&mut self, recalled: bool) {
         if let Some(day) = self.days.get_mut(&Self::today_key()) {
             day.reviewed = day.reviewed.saturating_sub(1);
+            if !recalled {
+                day.forgotten = day.forgotten.saturating_sub(1);
+            }
         }
     }
 
@@ -319,16 +348,17 @@ impl AppState {
             .collect();
 
         let journal = self.journal.read().ok();
-        let (reviewed_today, streak_days, best_streak, activity) = journal
+        let (reviewed_today, streak_days, best_streak, activity, retention) = journal
             .map(|j| {
                 (
                     j.today().reviewed as usize,
                     j.streak(),
                     j.best_streak(),
                     j.recent_activity(84),
+                    j.retention(30),
                 )
             })
-            .unwrap_or((0, 0, 0, Vec::new()));
+            .unwrap_or((0, 0, 0, Vec::new(), None));
 
         Stats {
             total: cards.len(),
@@ -342,6 +372,7 @@ impl AppState {
             kinds: kind_stats,
             activity,
             forecast,
+            retention,
         }
     }
 }
@@ -383,6 +414,47 @@ mod tests {
     use super::*;
 
     #[test]
+    fn retention_needs_enough_reviews_to_mean_anything() {
+        let mut journal = Journal::default();
+        let today = Local::now().date_naive();
+        journal.days.insert(
+            today.to_string(),
+            DayLog {
+                reviewed: 4,
+                captured: 0,
+                forgotten: 1,
+            },
+        );
+        assert_eq!(journal.retention(30), None, "four reviews prove nothing");
+
+        journal.days.insert(
+            (today - Duration::days(1)).to_string(),
+            DayLog {
+                reviewed: 16,
+                captured: 0,
+                forgotten: 3,
+            },
+        );
+        let retention = journal.retention(30).expect("enough history now");
+        assert!((retention - 0.8).abs() < 0.001, "{retention}");
+    }
+
+    #[test]
+    fn retention_ignores_reviews_from_before_the_window() {
+        let mut journal = Journal::default();
+        let old = Local::now().date_naive() - Duration::days(90);
+        journal.days.insert(
+            old.to_string(),
+            DayLog {
+                reviewed: 50,
+                captured: 0,
+                forgotten: 50,
+            },
+        );
+        assert_eq!(journal.retention(30), None);
+    }
+
+    #[test]
     fn streak_counts_back_from_today() {
         let mut journal = Journal::default();
         let today = Local::now().date_naive();
@@ -392,6 +464,7 @@ mod tests {
                 DayLog {
                     reviewed: 1,
                     captured: 0,
+                    forgotten: 0,
                 },
             );
         }
@@ -407,6 +480,7 @@ mod tests {
             DayLog {
                 reviewed: 9,
                 captured: 0,
+                forgotten: 0,
             },
         );
         assert_eq!(journal.streak(), 0);
@@ -421,6 +495,7 @@ mod tests {
             DayLog {
                 reviewed: 2,
                 captured: 0,
+                forgotten: 0,
             },
         );
         assert_eq!(journal.streak(), 1);

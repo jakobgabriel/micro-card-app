@@ -19,6 +19,8 @@ import {
   Heading,
   Italic,
   Lightbulb,
+  ImagePlus,
+  LayoutTemplate,
   Link2,
   List,
   ListTodo,
@@ -31,9 +33,20 @@ import { Sheet } from "./Sheet";
 import { Button, Chip, SegmentedControl } from "./ui";
 import { useToast } from "./Toast";
 import { api, errorMessage } from "@/lib/api";
+import { pickAttachment } from "@/lib/attachments";
+import { TEMPLATES } from "@/lib/templates";
+import type { Template } from "@/lib/templates";
 import { useStore } from "@/lib/store";
 import type { Card, CardKind, Similar } from "@/lib/types";
-import { cn, extractInlineTags, prefixLines, wrapSelection } from "@/lib/utils";
+import {
+  cn,
+  extractInlineTags,
+  linkNameFor,
+  pendingLink,
+  prefixLines,
+  suggestLinks,
+  wrapSelection,
+} from "@/lib/utils";
 
 const DRAFT_KEY = "micro-card-draft-v1";
 
@@ -79,6 +92,10 @@ export function CaptureSheet({ open, onClose, editing, initialText }: CaptureShe
   const [saving, setSaving] = useState(false);
   const [similar, setSimilar] = useState<Similar[]>([]);
   const [merging, setMerging] = useState(false);
+  const [attaching, setAttaching] = useState(false);
+  /** Cards offered while typing inside `[[…]]`. */
+  const [linkQuery, setLinkQuery] = useState<{ query: string; start: number } | null>(null);
+  const [templatesOpen, setTemplatesOpen] = useState(false);
 
   const decks = useMemo(
     () =>
@@ -201,6 +218,79 @@ export function CaptureSheet({ open, onClose, editing, initialText }: CaptureShe
     [activeField],
   );
 
+  /**
+   * Copy a photo into the vault and drop an embed where the cursor is. The
+   * file lands next to the cards, so Obsidian shows the same image.
+   */
+  const attach = async () => {
+    setAttaching(true);
+    try {
+      const attachment = await pickAttachment();
+      if (attachment) {
+        format({ before: `![[${attachment.name}]]`, after: "" });
+        toast.success("Photo attached");
+      }
+    } catch (err) {
+      toast.error(errorMessage(err));
+    } finally {
+      setAttaching(false);
+    }
+  };
+
+  const linkSuggestions = useMemo(
+    () =>
+      linkQuery
+        ? suggestLinks(
+            (library?.cards ?? []).filter((c) => c.id !== editing?.id),
+            linkQuery.query,
+          )
+        : [],
+    [linkQuery, library?.cards, editing?.id],
+  );
+
+  /** Called on every keystroke in the front box, to spot `[[` as it is typed. */
+  const trackLink = (element: HTMLTextAreaElement | null) => {
+    if (!element) return;
+    setLinkQuery(pendingLink(element.value, element.selectionStart ?? 0));
+  };
+
+  /** Complete the link the caret is sitting in. */
+  const insertLink = (card: Card) => {
+    const el = textRef.current;
+    if (!el || !linkQuery) return;
+    const name = linkNameFor(card);
+    const before = front.slice(0, linkQuery.start);
+    const after = front.slice(el.selectionStart ?? front.length);
+    const text = `${before}[[${name}]]${after}`;
+    const cursor = before.length + name.length + 4;
+    setFront(text);
+    setLinkQuery(null);
+    requestAnimationFrame(() => {
+      el.focus();
+      el.setSelectionRange(cursor, cursor);
+    });
+  };
+
+  /** Start from a shape instead of a blank box. */
+  const applyTemplate = (template: Template) => {
+    setKind(template.kind);
+    setFront(template.front);
+    setBack(template.back ?? "");
+    if (template.tags) setTags(template.tags);
+    if (template.deck) setDeck(template.deck);
+    setShowExtras(Boolean(template.tags?.length || template.deck));
+    setTemplatesOpen(false);
+    requestAnimationFrame(() => {
+      const el = textRef.current;
+      if (!el) return;
+      el.focus();
+      // Drop the caret on the first blank line, which is where writing starts.
+      const firstGap = template.front.indexOf("\n\n\n");
+      const cursor = firstGap === -1 ? template.front.length : firstGap + 2;
+      el.setSelectionRange(cursor, cursor);
+    });
+  };
+
   const inlineTags = useMemo(() => extractInlineTags(`${front} ${back}`), [front, back]);
   const allTags = useMemo(
     () => [...new Set([...tags, ...inlineTags])],
@@ -303,20 +393,60 @@ export function CaptureSheet({ open, onClose, editing, initialText }: CaptureShe
         </div>
       }
     >
-      <SegmentedControl
-        className="pb-3 pt-1"
-        options={KIND_OPTIONS}
-        value={kind}
-        onChange={setKind}
-      />
+      <div className="flex items-center gap-2 pb-3 pt-1">
+        <SegmentedControl
+          className="min-w-0 flex-1"
+          options={KIND_OPTIONS}
+          value={kind}
+          onChange={setKind}
+        />
+        {!editing && (
+          <button
+            aria-label="Start from a template"
+            title="Start from a template"
+            onClick={() => setTemplatesOpen((open) => !open)}
+            className={cn(
+              "grid h-10 w-10 shrink-0 place-items-center rounded-full transition active:scale-90",
+              templatesOpen ? "bg-brand text-brand-ink" : "bg-raised text-muted",
+            )}
+          >
+            <LayoutTemplate className="h-4 w-4" />
+          </button>
+        )}
+      </div>
+
+      {templatesOpen && !editing && (
+        <div className="mb-3 space-y-1.5 rounded-2xl bg-raised p-2 animate-fade-in">
+          {TEMPLATES.map((template) => (
+            <button
+              key={template.id}
+              onClick={() => applyTemplate(template)}
+              className="w-full rounded-xl px-3 py-2.5 text-left active:bg-line"
+            >
+              <p className="text-sm font-bold">{template.name}</p>
+              <p className="text-xs leading-snug text-muted">{template.description}</p>
+            </button>
+          ))}
+        </div>
+      )}
 
       <textarea
         ref={textRef}
         value={front}
-        onChange={(e) => setFront(e.target.value)}
+        onChange={(e) => {
+          setFront(e.target.value);
+          trackLink(e.target);
+        }}
         onFocus={() => setActiveField("front")}
+        onBlur={() => setLinkQuery(null)}
+        onKeyUp={(e) => trackLink(e.currentTarget)}
+        onClick={(e) => trackLink(e.currentTarget)}
         onKeyDown={(e) => {
           if ((e.metaKey || e.ctrlKey) && e.key === "Enter") void submit(false);
+          if (e.key === "Escape" && linkQuery) {
+            e.preventDefault();
+            setLinkQuery(null);
+          }
         }}
         placeholder={PLACEHOLDERS[kind]}
         rows={kind === "qa" ? 4 : 9}
@@ -327,7 +457,28 @@ export function CaptureSheet({ open, onClose, editing, initialText }: CaptureShe
         )}
       />
 
-      <FormatBar onFormat={format} />
+      {linkSuggestions.length > 0 && (
+        <div className="mt-2 overflow-hidden rounded-2xl border border-line bg-surface shadow-lift animate-fade-in">
+          <p className="border-b border-line px-3 py-2 text-xs font-bold uppercase tracking-wide text-muted">
+            Link to a card
+          </p>
+          {linkSuggestions.map((card) => (
+            <button
+              key={card.id}
+              // Keep focus in the text box so the caret does not move away.
+              onMouseDown={(e) => e.preventDefault()}
+              onTouchStart={(e) => e.preventDefault()}
+              onClick={() => insertLink(card)}
+              className="flex w-full items-center gap-2 border-b border-line px-3 py-2.5 text-left last:border-0 active:bg-raised"
+            >
+              <Link2 className="h-4 w-4 shrink-0 text-brand" />
+              <span className="truncate text-sm font-medium">{card.title}</span>
+            </button>
+          ))}
+        </div>
+      )}
+
+      <FormatBar onFormat={format} onAttach={() => void attach()} attaching={attaching} />
 
       {kind === "qa" && (
         <>
@@ -505,9 +656,28 @@ const FORMATS: { label: string; icon: JSX.Element; action: FormatAction }[] = [
  * Formatting without knowing Markdown. The bar sits under the text box rather
  * than above it, where a phone keyboard would cover it.
  */
-function FormatBar({ onFormat }: { onFormat: (action: FormatAction) => void }) {
+function FormatBar({
+  onFormat,
+  onAttach,
+  attaching,
+}: {
+  onFormat: (action: FormatAction) => void;
+  onAttach: () => void;
+  attaching: boolean;
+}) {
   return (
     <div className="no-scrollbar flex gap-1 overflow-x-auto pt-2">
+      <button
+        aria-label="Attach a photo"
+        title="Attach a photo"
+        disabled={attaching}
+        onMouseDown={(e) => e.preventDefault()}
+        onTouchStart={(e) => e.preventDefault()}
+        onClick={onAttach}
+        className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-brand-soft text-brand transition active:scale-90 disabled:opacity-50"
+      >
+        <ImagePlus className="h-4 w-4" />
+      </button>
       {FORMATS.map((item) => (
         <button
           key={item.label}

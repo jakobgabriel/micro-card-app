@@ -13,6 +13,10 @@ src-tauri/gen/android
 src-tauri/gen/apple
 src-tauri/gen/schemas
 
+# Screenshots captured while driving the app during development
+/*.png
+/src-tauri/*.png
+
 # Android signing
 *.keystore
 *.jks
