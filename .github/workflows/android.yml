@@ -13,8 +13,13 @@ on:
         type: string
         default: aarch64
   push:
-    branches: ["claude/**"]
+    branches: ["claude/**", "main"]
     tags: ["v*"]
+    # A five-minute Android build for a typo in a document helps nobody.
+    paths-ignore:
+      - "**/*.md"
+      - "docs/**"
+      - ".github/workflows/ci.yml"
 
 # One build at a time per branch; a new push makes the previous one pointless.
 concurrency:

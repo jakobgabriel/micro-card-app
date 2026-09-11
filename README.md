@@ -123,7 +123,41 @@ the app sandbox, legacy external storage for Android 10, `adjustResize` so the
 keyboard never covers the editor, and the share-target intent filter plus the
 `MainActivity` that receives shared text. Re-run it after any `android init`.
 
-The `Android APK` workflow builds a debug APK on demand or on a `v*` tag.
+#### Or let CI build it
+
+The **Android APK** workflow builds and uploads an installable APK:
+
+| Trigger | What it builds |
+| --- | --- |
+| Push to `main` or a `claude/**` branch | Debug APK, `aarch64` only — one Rust compilation, so it finishes in about five minutes |
+| Tag `v*` | Release APK for every ABI |
+| Run workflow (manual) | Your choice of profile and ABIs |
+
+The APK lands in the run's **Artifacts**. A debug APK installs on a phone with
+USB debugging or by copying it across; Android will ask you to allow installing
+from that source.
+
+The debug APK is large — around 200 MB — because a debug Rust build keeps its
+symbols. That is fine for installing on your own phone; a tagged release build
+is a fraction of the size.
+
+Two things the workflow deliberately does *not* do:
+
+- **Pin an NDK version.** It uses whichever NDK the runner image ships, because
+  a pinned version eventually disappears from the SDK catalogue and the build
+  then fails for a reason that has nothing to do with the code.
+- **Sign a release build.** That needs a keystore, which belongs in repository
+  secrets, not in a repo. A tagged build therefore produces
+  `app-universal-release-unsigned.apk`; sign it yourself with `apksigner`, or
+  add a signing config to the generated Gradle project.
+
+### The pinned toolchain
+
+`rust-toolchain.toml` fixes the Rust version for everyone. Clippy gains lints
+between releases, so without a pin "clean on my machine" and "clean in CI" drift
+apart — which is exactly what happened here, and why CI failed for a while on
+lints that a local run could not see. Upgrading is a deliberate edit to that
+file, with the new lints fixed in the same commit.
 
 ### Granting storage access on Android
 

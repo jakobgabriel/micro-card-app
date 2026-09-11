@@ -129,20 +129,34 @@ function patchMainActivity() {
     return;
   }
 
-  const packageLine = current.match(/^package\s+[\w.]+/m);
-  if (!packageLine) {
+  // Keep whatever the template declared — the package line and any imports it
+  // needs to resolve TauriActivity — and replace only the class itself. A
+  // wholesale rewrite would drop an import the generated project relies on.
+  const classStart = current.search(/(^|\n)\s*(open\s+)?class\s+MainActivity\b/);
+  if (classStart === -1) {
+    console.error(
+      "MainActivity.kt does not declare a MainActivity class.\n" +
+        "The generated project has changed shape; update this script.",
+    );
+    process.exit(1);
+  }
+
+  const header = current.slice(0, classStart).trimEnd();
+  if (!/^package\s+[\w.]+/m.test(header)) {
     console.error("MainActivity.kt has no package declaration; not patching.");
     process.exit(1);
   }
 
+  const needed = [
+    "import android.content.Intent",
+    "import android.os.Bundle",
+    "import org.json.JSONObject",
+    "import java.io.File",
+  ].filter((line) => !header.includes(line));
+
   writeFileSync(
     activity,
-    `${packageLine[0]}
-
-import android.content.Intent
-import android.os.Bundle
-import org.json.JSONObject
-import java.io.File
+    `${header}${needed.length ? `\n${needed.join("\n")}` : ""}
 
 /**
  * Micro Card's activity.
