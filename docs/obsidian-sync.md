@@ -84,3 +84,7 @@ Allow management of all files.**
 
 Connecting a vault probes it with a real write first, so a missing permission is
 reported immediately, in plain words, instead of silently losing a card later.
+
+If you would rather not grant it, two options keep working without any storage
+permission at all: local mode (the app's own folder) and
+[GitHub sync](github-sync.md), which only needs network access.

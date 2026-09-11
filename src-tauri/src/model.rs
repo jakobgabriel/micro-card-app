@@ -190,13 +190,25 @@ pub struct CardDraft {
     pub starred: Option<bool>,
 }
 
+/// How the app picks its colours.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Theme {
+    /// Follow the phone's own light/dark setting.
+    #[default]
+    System,
+    Light,
+    Dark,
+}
+
 /// Persisted app settings.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Settings {
-    /// Absolute path of the Obsidian vault. `None` means local-only mode.
+    /// Absolute path of the Obsidian vault. `None` means cards live in the
+    /// app's own storage — which is also the case for GitHub-only setups.
     #[serde(default)]
     pub vault_path: Option<String>,
-    /// Sub-folder inside the vault that holds the cards.
+    /// Sub-folder inside the vault (or repository) that holds the cards.
     #[serde(default = "default_folder")]
     pub folder: String,
     /// Tag automatically added to every new card, so cards are easy to find
@@ -205,11 +217,33 @@ pub struct Settings {
     pub default_tag: String,
     #[serde(default = "default_true")]
     pub onboarded: bool,
-    #[serde(default = "default_true")]
-    pub dark_mode: bool,
+    #[serde(default)]
+    pub theme: Theme,
+    /// Body text scale, 0.85–1.4. For anyone who finds the default too small.
+    #[serde(default = "default_scale")]
+    pub text_scale: f32,
     /// Daily review target, used for the progress ring.
     #[serde(default = "default_goal")]
     pub daily_goal: u32,
+    /// Cards per review session.
+    #[serde(default = "default_session")]
+    pub session_size: u32,
+    /// Local hour (0–23) for the daily review reminder; `None` is off.
+    #[serde(default)]
+    pub reminder_hour: Option<u32>,
+    /// Repository cards are mirrored to, if any.
+    #[serde(default)]
+    pub github: Option<crate::github::RepoConfig>,
+    /// Sync automatically on launch, on resume and after saving.
+    #[serde(default = "default_true")]
+    pub github_auto_sync: bool,
+}
+
+fn default_scale() -> f32 {
+    1.0
+}
+fn default_session() -> u32 {
+    20
 }
 
 fn default_folder() -> String {
@@ -232,8 +266,13 @@ impl Default for Settings {
             folder: default_folder(),
             default_tag: default_tag(),
             onboarded: false,
-            dark_mode: true,
+            theme: Theme::default(),
+            text_scale: default_scale(),
             daily_goal: default_goal(),
+            session_size: default_session(),
+            reminder_hour: None,
+            github: None,
+            github_auto_sync: true,
         }
     }
 }
@@ -247,7 +286,7 @@ pub struct VaultCandidate {
     pub note_count: usize,
 }
 
-/// Counters shown on the home screen.
+/// Counters shown on the home and stats screens.
 #[derive(Debug, Clone, Serialize)]
 pub struct Stats {
     pub total: usize,
@@ -255,8 +294,15 @@ pub struct Stats {
     pub captured_today: usize,
     pub reviewed_today: usize,
     pub streak_days: u32,
+    /// Longest streak ever reached, so a broken streak still shows progress.
+    pub best_streak: u32,
     pub decks: Vec<DeckStat>,
     pub tags: Vec<TagStat>,
+    pub kinds: Vec<KindStat>,
+    /// Activity per day for the last twelve weeks, oldest first.
+    pub activity: Vec<DayCount>,
+    /// How many cards fall due on each of the next fourteen days.
+    pub forecast: Vec<DayCount>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -270,4 +316,18 @@ pub struct DeckStat {
 pub struct TagStat {
     pub name: String,
     pub count: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct KindStat {
+    pub kind: String,
+    pub count: usize,
+}
+
+/// One bar of the activity chart or the review forecast.
+#[derive(Debug, Clone, Serialize)]
+pub struct DayCount {
+    /// Local date, `YYYY-MM-DD`.
+    pub date: String,
+    pub count: u32,
 }

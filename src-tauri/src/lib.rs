@@ -2,9 +2,11 @@
 
 mod commands;
 mod error;
+mod github;
 mod markdown;
 mod model;
 mod state;
+mod sync;
 mod vault;
 
 use tauri::Manager;
@@ -17,6 +19,7 @@ pub fn run() {
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             let data_dir = app
                 .path()
@@ -43,6 +46,23 @@ pub fn run() {
             commands::due_cards,
             commands::grade_card,
             commands::obsidian_uri,
+            commands::github_status,
+            commands::github_connect,
+            commands::github_disconnect,
+            commands::sync_now,
+            commands::rename_tag,
+            commands::rename_deck,
+            commands::bulk_edit,
+            commands::bulk_delete,
+            commands::restore_many,
+            commands::review_session,
+            commands::restore_review,
+            commands::find_similar,
+            commands::import_text,
+            commands::export_markdown,
+            commands::write_text_file,
+            commands::read_text_file,
+            commands::add_sample_cards,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Micro Card");

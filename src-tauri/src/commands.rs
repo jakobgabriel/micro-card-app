@@ -3,16 +3,18 @@
 
 use std::path::PathBuf;
 
-use chrono::Utc;
+use chrono::{Local, Utc};
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
 use crate::error::{Error, Result};
+use crate::github::{GitHub, RepoConfig, RepoInfo};
 use crate::markdown;
 use crate::model::{
-    self, Card, CardDraft, CardKind, Grade, Review, Settings, Stats, VaultCandidate,
+    self, Card, CardDraft, CardKind, Grade, Review, Settings, Stats, Theme, VaultCandidate,
 };
 use crate::state::AppState;
+use crate::sync::{self, SyncReport};
 use crate::vault::{self, Vault};
 
 /// Everything the home screen needs, in one round trip.
@@ -68,9 +70,27 @@ pub struct SettingsPatch {
     #[serde(default)]
     pub onboarded: Option<bool>,
     #[serde(default)]
-    pub dark_mode: Option<bool>,
+    pub theme: Option<String>,
+    #[serde(default)]
+    pub text_scale: Option<f32>,
     #[serde(default)]
     pub daily_goal: Option<u32>,
+    #[serde(default)]
+    pub session_size: Option<u32>,
+    /// `Some(None)` turns the reminder off; `Some(Some(h))` sets the hour.
+    #[serde(default, deserialize_with = "double_option")]
+    pub reminder_hour: Option<Option<u32>>,
+    #[serde(default)]
+    pub github_auto_sync: Option<bool>,
+}
+
+/// Lets the UI distinguish "leave this alone" from "clear this".
+fn double_option<'de, D, T>(deserializer: D) -> std::result::Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Deserialize::deserialize(deserializer).map(Some)
 }
 
 #[tauri::command]
@@ -89,8 +109,24 @@ pub fn update_settings(state: State<'_, AppState>, patch: SettingsPatch) -> Resu
         if let Some(v) = patch.onboarded {
             settings.onboarded = v;
         }
-        if let Some(v) = patch.dark_mode {
-            settings.dark_mode = v;
+        if let Some(theme) = patch.theme {
+            settings.theme = match theme.as_str() {
+                "light" => Theme::Light,
+                "dark" => Theme::Dark,
+                _ => Theme::System,
+            };
+        }
+        if let Some(scale) = patch.text_scale {
+            settings.text_scale = scale.clamp(0.85, 1.4);
+        }
+        if let Some(size) = patch.session_size {
+            settings.session_size = size.clamp(5, 200);
+        }
+        if let Some(hour) = patch.reminder_hour {
+            settings.reminder_hour = hour.map(|h| h.min(23));
+        }
+        if let Some(auto) = patch.github_auto_sync {
+            settings.github_auto_sync = auto;
         }
         if let Some(v) = patch.daily_goal {
             settings.daily_goal = v.clamp(1, 500);
@@ -585,10 +621,827 @@ mod tests {
     }
 
     #[test]
+    fn renaming_a_tag_updates_the_frontmatter_and_the_text() {
+        let state = scratch_state();
+        let mut d = draft("A note about #physics and waves");
+        d.tags = Some(vec!["physics".into()]);
+        save_draft(&state, d).unwrap();
+
+        let result = rename_tag_inner(&state, "physics", "optics").unwrap();
+
+        assert_eq!(result.changed, 1);
+        let card = &state.cards_snapshot()[0];
+        assert!(card.tags.iter().any(|t| t == "optics"), "{:?}", card.tags);
+        assert!(!card.tags.iter().any(|t| t == "physics"));
+        assert!(card.front.contains("#optics"), "{}", card.front);
+        std::fs::remove_dir_all(&state.data_dir).ok();
+    }
+
+    #[test]
+    fn renaming_a_tag_leaves_lookalike_words_alone() {
+        assert_eq!(
+            replace_inline_tag("#physics and #physics-lab", "physics", "optics"),
+            "#optics and #physics-lab"
+        );
+        assert_eq!(
+            replace_inline_tag("costs $5#physics", "physics", "x"),
+            "costs $5#physics"
+        );
+    }
+
+    #[test]
+    fn pasted_lines_become_cards_and_pairs_become_flashcards() {
+        let state = scratch_state();
+        let request = ImportRequest {
+            text: "Bonjour\tHello\nMerci :: Thank you\nJust a plain note".to_string(),
+            split: None,
+            kind: None,
+            deck: Some("French".into()),
+            tags: Some(vec!["language".into()]),
+        };
+
+        let result = import_text_inner(&state, request).unwrap();
+
+        assert_eq!(result.created, 3);
+        let cards = state.cards_snapshot();
+        let bonjour = cards.iter().find(|c| c.front == "Bonjour").unwrap();
+        assert_eq!(bonjour.kind, CardKind::Qa);
+        assert_eq!(bonjour.back, "Hello");
+        assert_eq!(bonjour.deck.as_deref(), Some("French"));
+        let plain = cards
+            .iter()
+            .find(|c| c.front == "Just a plain note")
+            .unwrap();
+        assert_eq!(plain.kind, CardKind::Note);
+        std::fs::remove_dir_all(&state.data_dir).ok();
+    }
+
+    #[test]
+    fn near_duplicates_are_flagged_but_unrelated_cards_are_not() {
+        let state = scratch_state();
+        save_draft(
+            &state,
+            draft("Spaced repetition schedules reviews before forgetting"),
+        )
+        .unwrap();
+        save_draft(&state, draft("Sourdough needs a warm kitchen overnight")).unwrap();
+
+        let hits = find_similar_inner(
+            &state,
+            "Spaced repetition schedules reviews just before forgetting",
+            None,
+        );
+        assert_eq!(hits.len(), 1);
+        assert!(hits[0].title.starts_with("Spaced repetition"));
+
+        assert!(find_similar_inner(&state, "Completely unrelated wording here", None).is_empty());
+        std::fs::remove_dir_all(&state.data_dir).ok();
+    }
+
+    #[test]
+    fn a_cram_session_studies_cards_that_are_not_due_yet() {
+        let state = scratch_state();
+        let mut d = draft("Q?");
+        d.back = Some("A".into());
+        let card = save_draft(&state, d).unwrap();
+        apply_grade(&state, card.id.clone(), Grade::Easy).unwrap();
+
+        let due_only = session_inner(&state, SessionRequest::default());
+        assert!(due_only.is_empty(), "the card was just answered");
+
+        let cram = session_inner(
+            &state,
+            SessionRequest {
+                cram: true,
+                ..Default::default()
+            },
+        );
+        assert_eq!(cram.len(), 1);
+        std::fs::remove_dir_all(&state.data_dir).ok();
+    }
+
+    #[test]
+    fn undoing_a_review_restores_the_old_schedule() {
+        let state = scratch_state();
+        let mut d = draft("Q?");
+        d.back = Some("A".into());
+        let card = save_draft(&state, d).unwrap();
+        let before = card.review.clone();
+
+        apply_grade(&state, card.id.clone(), Grade::Good).unwrap();
+        let restored = restore_review_inner(&state, card.id.clone(), before.clone()).unwrap();
+
+        assert_eq!(restored.review.reps, before.reps);
+        assert!(restored.is_due(Utc::now()), "the card is back in the queue");
+        std::fs::remove_dir_all(&state.data_dir).ok();
+    }
+
+    #[test]
     fn an_empty_card_is_refused_with_a_sentence_a_user_can_read() {
         let state = scratch_state();
         let err = save_draft(&state, draft("   ")).unwrap_err();
         assert_eq!(err.to_string(), "A card needs some text.");
         std::fs::remove_dir_all(&state.data_dir).ok();
     }
+}
+
+// ---------------------------------------------------------------------------
+// GitHub repository sync
+// ---------------------------------------------------------------------------
+
+/// Run blocking network work on a plain OS thread.
+///
+/// `reqwest::blocking` builds and drops its own Tokio runtime internally, and
+/// dropping a runtime inside Tauri's async context panics — including on
+/// Tokio's blocking pool, where the runtime handle is still attached. A scoped
+/// thread carries no runtime, so the client can be built, used and dropped
+/// there safely, and the command simply waits for it.
+fn off_runtime<T: Send>(work: impl FnOnce() -> Result<T> + Send) -> Result<T> {
+    std::thread::scope(|scope| scope.spawn(work).join())
+        .map_err(|_| Error::msg("The connection to GitHub stopped unexpectedly."))?
+}
+
+/// What the UI shows on the sync row without having to ask GitHub anything.
+#[derive(Debug, Serialize)]
+pub struct GithubStatus {
+    pub connected: bool,
+    pub repo: Option<String>,
+    pub branch: Option<String>,
+    pub auto_sync: bool,
+    pub last_synced: Option<String>,
+    pub last_commit: Option<String>,
+    /// Cards tracked by the last sync, so "nothing there yet" is obvious.
+    pub tracked_files: usize,
+}
+
+#[tauri::command]
+pub fn github_status(state: State<'_, AppState>) -> GithubStatus {
+    let settings = state.settings_snapshot();
+    let sync_state = state.sync_state.read().ok();
+    let connected = settings.github.is_some() && state.github_token().is_some();
+    GithubStatus {
+        connected,
+        repo: settings
+            .github
+            .as_ref()
+            .map(|g| format!("{}/{}", g.owner, g.repo)),
+        branch: settings.github.as_ref().map(|g| g.branch.clone()),
+        auto_sync: settings.github_auto_sync,
+        last_synced: sync_state.as_ref().and_then(|s| s.last_synced.clone()),
+        last_commit: sync_state.as_ref().and_then(|s| s.last_commit.clone()),
+        tracked_files: sync_state.map(|s| s.base.len()).unwrap_or(0),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GithubConnection {
+    pub token: String,
+    /// `owner/repo`, a browser URL or a clone URL — all are accepted.
+    pub repo: String,
+    #[serde(default)]
+    pub branch: Option<String>,
+    #[serde(default)]
+    pub folder: Option<String>,
+}
+
+/// Check a token and repository, and remember them if they work. Nothing is
+/// stored until GitHub has confirmed the repository can actually be written.
+#[tauri::command(async)]
+pub fn github_connect(
+    state: State<'_, AppState>,
+    connection: GithubConnection,
+) -> Result<RepoInfo> {
+    let token = connection.token.trim().to_string();
+    if token.is_empty() {
+        return Err(Error::msg("Paste a GitHub token to continue."));
+    }
+    let (owner, repo) = sync::parse_repo(&connection.repo)?;
+    let folder = connection
+        .folder
+        .map(|f| f.trim().trim_matches('/').to_string())
+        .unwrap_or_else(|| state.settings_snapshot().folder);
+
+    let branch = connection
+        .branch
+        .map(|b| b.trim().to_string())
+        .filter(|b| !b.is_empty());
+
+    // Probe with the repository's own default branch first, so a user who
+    // never renamed `master` does not have to know that.
+    let probe_config = RepoConfig {
+        owner: owner.clone(),
+        repo: repo.clone(),
+        branch: branch.clone().unwrap_or_else(|| "main".to_string()),
+    };
+    let info = {
+        let token = token.clone();
+        let folder = folder.clone();
+        off_runtime(move || GitHub::new(token, probe_config)?.probe(&folder))?
+    };
+
+    if !info.can_write {
+        return Err(Error::msg(
+            "That token can read the repository but not write to it. \
+             Give it Contents: Read and write access.",
+        ));
+    }
+
+    let chosen_branch = branch.unwrap_or_else(|| info.default_branch.clone());
+    let config = RepoConfig {
+        owner,
+        repo,
+        branch: chosen_branch,
+    };
+    // Re-probe on the branch actually chosen so the card count is honest.
+    let info = {
+        let token = token.clone();
+        let folder = folder.clone();
+        let config = config.clone();
+        off_runtime(move || GitHub::new(token, config)?.probe(&folder))?
+    };
+
+    state.set_github_token(Some(&token))?;
+    {
+        let mut settings = state
+            .settings
+            .write()
+            .map_err(|_| Error::msg("Settings are busy, try again."))?;
+        settings.github = Some(config);
+        settings.folder = folder;
+        settings.onboarded = true;
+        state.save_settings(&settings)?;
+    }
+    Ok(info)
+}
+
+/// Forget the repository. Cards stay exactly where they are, on both sides.
+#[tauri::command]
+pub fn github_disconnect(state: State<'_, AppState>) -> Result<Library> {
+    state.set_github_token(None)?;
+    {
+        let mut settings = state
+            .settings
+            .write()
+            .map_err(|_| Error::msg("Settings are busy, try again."))?;
+        settings.github = None;
+        state.save_settings(&settings)?;
+    }
+    if let Ok(mut sync_state) = state.sync_state.write() {
+        *sync_state = Default::default();
+    }
+    let _ = state.save_sync_state();
+    state.refresh()?;
+    library(&state)
+}
+
+/// Pull, merge and push in one go. Safe to call when nothing changed.
+#[tauri::command(async)]
+pub fn sync_now(state: State<'_, AppState>) -> Result<SyncReport> {
+    let settings = state.settings_snapshot();
+    let config = settings
+        .github
+        .clone()
+        .ok_or_else(|| Error::msg("No repository is connected yet."))?;
+    let token = state
+        .github_token()
+        .ok_or_else(|| Error::msg("The GitHub token is missing. Connect the repository again."))?;
+
+    let vault = state.vault()?;
+    vault.ensure_dirs()?;
+    let tree = sync::LocalTree::new(vault.cards_dir(), &settings.folder);
+
+    let mut sync_state = state
+        .sync_state
+        .read()
+        .map(|s| s.clone())
+        .unwrap_or_default();
+    let stamp = Local::now().format("%Y-%m-%d %H-%M").to_string();
+
+    let (report, sync_state) = off_runtime(move || {
+        let client = GitHub::new(token, config)?;
+        let report = sync::sync(&tree, &client, &mut sync_state, &stamp)?;
+        Ok((report, sync_state))
+    })?;
+
+    if let Ok(mut guard) = state.sync_state.write() {
+        *guard = sync_state;
+    }
+    let _ = state.save_sync_state();
+    state.refresh()?;
+    Ok(report)
+}
+
+// ---------------------------------------------------------------------------
+// Organising: tags, decks and bulk edits
+// ---------------------------------------------------------------------------
+
+/// How many cards a bulk operation touched.
+#[derive(Debug, Serialize)]
+pub struct BulkResult {
+    pub changed: usize,
+}
+
+/// Rename a tag everywhere, or remove it when `to` is empty.
+#[tauri::command]
+pub fn rename_tag(state: State<'_, AppState>, from: String, to: String) -> Result<BulkResult> {
+    rename_tag_inner(&state, &from, &to)
+}
+
+pub fn rename_tag_inner(state: &AppState, from: &str, to: &str) -> Result<BulkResult> {
+    let from = markdown::normalize_tag(from);
+    let to = markdown::normalize_tag(to);
+    if from.is_empty() {
+        return Err(Error::msg("Pick a tag to rename."));
+    }
+    let vault = state.vault()?;
+    let now = model::now();
+    let mut changed = 0;
+
+    for mut card in state.cards_snapshot() {
+        if !card.tags.iter().any(|t| t.eq_ignore_ascii_case(&from)) {
+            continue;
+        }
+        // The tag may also be written inline in the text, where it is what the
+        // user actually sees; rename it there too.
+        card.front = replace_inline_tag(&card.front, &from, &to);
+        card.back = replace_inline_tag(&card.back, &from, &to);
+        card.tags.retain(|t| !t.eq_ignore_ascii_case(&from));
+        if !to.is_empty() && !card.tags.iter().any(|t| t.eq_ignore_ascii_case(&to)) {
+            card.tags.push(to.clone());
+        }
+        card.updated = now;
+        vault.save(&mut card)?;
+        changed += 1;
+    }
+    state.refresh()?;
+    Ok(BulkResult { changed })
+}
+
+/// Replace `#old` with `#new` in body text, leaving other words alone.
+fn replace_inline_tag(text: &str, from: &str, to: &str) -> String {
+    let needle = format!("#{from}");
+    let replacement = if to.is_empty() {
+        String::new()
+    } else {
+        format!("#{to}")
+    };
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(idx) = rest.to_lowercase().find(&needle.to_lowercase()) {
+        let (before, tail) = rest.split_at(idx);
+        let after = &tail[needle.len()..];
+        let boundary_before = before.is_empty() || before.ends_with(char::is_whitespace);
+        let boundary_after = after
+            .chars()
+            .next()
+            .map(|c| !(c.is_alphanumeric() || c == '-' || c == '_' || c == '/'))
+            .unwrap_or(true);
+        out.push_str(before);
+        if boundary_before && boundary_after {
+            out.push_str(&replacement);
+        } else {
+            out.push_str(&tail[..needle.len()]);
+        }
+        rest = after;
+    }
+    out.push_str(rest);
+    // Removing a tag can leave a double space behind.
+    out.replace("  ", " ").trim_end().to_string()
+}
+
+/// Rename a deck, moving every card in it.
+#[tauri::command]
+pub fn rename_deck(state: State<'_, AppState>, from: String, to: String) -> Result<BulkResult> {
+    let from = from.trim().to_string();
+    let to = to.trim().to_string();
+    let vault = state.vault()?;
+    let now = model::now();
+    let mut changed = 0;
+
+    for mut card in state.cards_snapshot() {
+        let current = card.deck.clone().unwrap_or_else(|| "Inbox".to_string());
+        if current != from {
+            continue;
+        }
+        card.deck = (!to.is_empty() && to != "Inbox").then(|| to.clone());
+        card.updated = now;
+        vault.save(&mut card)?;
+        changed += 1;
+    }
+    state.refresh()?;
+    Ok(BulkResult { changed })
+}
+
+/// Edits applied to several cards at once from the library's selection mode.
+#[derive(Debug, Deserialize)]
+pub struct BulkEdit {
+    pub ids: Vec<String>,
+    #[serde(default)]
+    pub add_tags: Option<Vec<String>>,
+    #[serde(default)]
+    pub remove_tags: Option<Vec<String>>,
+    #[serde(default)]
+    pub deck: Option<String>,
+    #[serde(default)]
+    pub starred: Option<bool>,
+}
+
+#[tauri::command]
+pub fn bulk_edit(state: State<'_, AppState>, edit: BulkEdit) -> Result<BulkResult> {
+    let vault = state.vault()?;
+    let now = model::now();
+    let mut changed = 0;
+
+    for mut card in state.cards_snapshot() {
+        if !edit.ids.contains(&card.id) {
+            continue;
+        }
+        if let Some(add) = &edit.add_tags {
+            for tag in add.iter().map(|t| markdown::normalize_tag(t)) {
+                if !tag.is_empty() && !card.tags.iter().any(|t| t.eq_ignore_ascii_case(&tag)) {
+                    card.tags.push(tag);
+                }
+            }
+        }
+        if let Some(remove) = &edit.remove_tags {
+            for tag in remove.iter().map(|t| markdown::normalize_tag(t)) {
+                card.tags.retain(|t| !t.eq_ignore_ascii_case(&tag));
+            }
+        }
+        if let Some(deck) = &edit.deck {
+            let deck = deck.trim();
+            card.deck = (!deck.is_empty() && deck != "Inbox").then(|| deck.to_string());
+        }
+        if let Some(starred) = edit.starred {
+            card.starred = starred;
+        }
+        card.updated = now;
+        vault.save(&mut card)?;
+        changed += 1;
+    }
+    state.refresh()?;
+    Ok(BulkResult { changed })
+}
+
+/// Delete several cards, returning where each went so the whole batch can be
+/// undone from one toast.
+#[tauri::command]
+pub fn bulk_delete(state: State<'_, AppState>, ids: Vec<String>) -> Result<Vec<Deleted>> {
+    let vault = state.vault()?;
+    let mut deleted = Vec::new();
+    for card in state.cards_snapshot() {
+        if !ids.contains(&card.id) {
+            continue;
+        }
+        if let Ok(trashed_path) = vault.trash(&card.path) {
+            deleted.push(Deleted {
+                id: card.id,
+                trashed_path,
+            });
+        }
+    }
+    state.refresh()?;
+    Ok(deleted)
+}
+
+#[tauri::command]
+pub fn restore_many(state: State<'_, AppState>, paths: Vec<String>) -> Result<Library> {
+    let vault = state.vault()?;
+    for path in paths {
+        let _ = vault.restore(&path);
+    }
+    state.refresh()?;
+    library(&state)
+}
+
+// ---------------------------------------------------------------------------
+// Review sessions
+// ---------------------------------------------------------------------------
+
+/// Which cards a review session should contain.
+#[derive(Debug, Default, Deserialize)]
+pub struct SessionRequest {
+    #[serde(default)]
+    pub deck: Option<String>,
+    #[serde(default)]
+    pub tag: Option<String>,
+    /// Ignore the schedule and study everything that matches — the "I have an
+    /// exam tomorrow" mode.
+    #[serde(default)]
+    pub cram: bool,
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
+#[tauri::command]
+pub fn review_session(state: State<'_, AppState>, request: SessionRequest) -> Vec<Card> {
+    session_inner(&state, request)
+}
+
+pub fn session_inner(state: &AppState, request: SessionRequest) -> Vec<Card> {
+    let settings = state.settings_snapshot();
+    let now = Utc::now();
+    let mut cards: Vec<Card> = state
+        .cards_snapshot()
+        .into_iter()
+        .filter(|c| c.kind.reviewable())
+        .filter(|c| request.cram || c.is_due(now))
+        .filter(|c| match &request.deck {
+            Some(deck) => c.deck.clone().unwrap_or_else(|| "Inbox".into()) == *deck,
+            None => true,
+        })
+        .filter(|c| match &request.tag {
+            Some(tag) => c.tags.iter().any(|t| t.eq_ignore_ascii_case(tag)),
+            None => true,
+        })
+        .collect();
+
+    // Hardest first: the cards that have been forgotten most often are the
+    // ones a short session should spend its time on.
+    cards.sort_by(|a, b| {
+        b.review
+            .lapses
+            .cmp(&a.review.lapses)
+            .then(a.review.due.cmp(&b.review.due))
+    });
+    cards.truncate(
+        request
+            .limit
+            .unwrap_or(settings.session_size as usize)
+            .max(1),
+    );
+    cards
+}
+
+/// Put a card's schedule back the way it was — the undo for a mis-tap during
+/// review, where the wrong button costs real work.
+#[tauri::command]
+pub fn restore_review(state: State<'_, AppState>, id: String, review: Review) -> Result<Card> {
+    restore_review_inner(&state, id, review)
+}
+
+pub fn restore_review_inner(state: &AppState, id: String, review: Review) -> Result<Card> {
+    let mut card = state
+        .cards_snapshot()
+        .into_iter()
+        .find(|c| c.id == id)
+        .ok_or(Error::NotFound(id))?;
+    card.review = review;
+    card.updated = model::now();
+    state.vault()?.save(&mut card)?;
+    if let Ok(mut journal) = state.journal.write() {
+        journal.undo_review();
+    }
+    let _ = state.save_journal();
+    state.refresh()?;
+    Ok(card)
+}
+
+// ---------------------------------------------------------------------------
+// Import, export and duplicate detection
+// ---------------------------------------------------------------------------
+
+/// A card that looks like the one being written, so the same note is not
+/// captured twice without the user noticing.
+#[derive(Debug, Serialize)]
+pub struct Similar {
+    pub id: String,
+    pub title: String,
+    /// 0.0–1.0 word overlap.
+    pub score: f32,
+}
+
+#[tauri::command]
+pub fn find_similar(
+    state: State<'_, AppState>,
+    text: String,
+    exclude: Option<String>,
+) -> Vec<Similar> {
+    find_similar_inner(&state, &text, exclude)
+}
+
+pub fn find_similar_inner(state: &AppState, text: &str, exclude: Option<String>) -> Vec<Similar> {
+    let words = word_set(text);
+    if words.len() < 3 {
+        return Vec::new();
+    }
+    let mut matches: Vec<Similar> = state
+        .cards_snapshot()
+        .into_iter()
+        .filter(|c| Some(&c.id) != exclude.as_ref())
+        .filter_map(|card| {
+            let other = word_set(&format!("{} {}", card.front, card.back));
+            let shared = words.iter().filter(|w| other.contains(*w)).count();
+            if shared == 0 {
+                return None;
+            }
+            let union = words.len() + other.len() - shared;
+            let score = shared as f32 / union.max(1) as f32;
+            (score >= 0.5).then_some(Similar {
+                id: card.id,
+                title: card.title,
+                score,
+            })
+        })
+        .collect();
+    matches.sort_by(|a, b| b.score.total_cmp(&a.score));
+    matches.truncate(3);
+    matches
+}
+
+/// Words worth comparing: short filler words are dropped so that two cards
+/// are not called similar because both contain "the".
+fn word_set(text: &str) -> std::collections::BTreeSet<String> {
+    text.to_lowercase()
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| w.len() > 3)
+        .map(String::from)
+        .collect()
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ImportRequest {
+    pub text: String,
+    /// `lines` makes one card per line; `blocks` splits on blank lines.
+    #[serde(default)]
+    pub split: Option<String>,
+    #[serde(default)]
+    pub kind: Option<String>,
+    #[serde(default)]
+    pub deck: Option<String>,
+    #[serde(default)]
+    pub tags: Option<Vec<String>>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ImportResult {
+    pub created: usize,
+    pub skipped: usize,
+}
+
+/// Turn pasted text into cards. Lines containing a `?`-separator, a tab or
+/// `::` become question/answer pairs, which covers exports from Anki, Quizlet
+/// and a plain list typed by hand.
+#[tauri::command]
+pub fn import_text(state: State<'_, AppState>, request: ImportRequest) -> Result<ImportResult> {
+    import_text_inner(&state, request)
+}
+
+pub fn import_text_inner(state: &AppState, request: ImportRequest) -> Result<ImportResult> {
+    let chunks: Vec<String> = match request.split.as_deref() {
+        Some("blocks") => request
+            .text
+            .split("\n\n")
+            .map(|b| b.trim().to_string())
+            .filter(|b| !b.is_empty())
+            .collect(),
+        _ => request
+            .text
+            .lines()
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty())
+            .collect(),
+    };
+
+    let mut created = 0;
+    let mut skipped = 0;
+    for chunk in chunks {
+        let (front, back) = split_pair(&chunk);
+        if front.trim().is_empty() {
+            skipped += 1;
+            continue;
+        }
+        let kind = match (&request.kind, back.is_empty()) {
+            (Some(k), _) => Some(k.clone()),
+            (None, false) => Some("qa".to_string()),
+            (None, true) => None,
+        };
+        let draft = CardDraft {
+            id: None,
+            kind,
+            title: None,
+            front,
+            back: (!back.is_empty()).then_some(back),
+            tags: request.tags.clone(),
+            deck: request.deck.clone(),
+            starred: None,
+        };
+        match save_draft(state, draft) {
+            Ok(_) => created += 1,
+            Err(_) => skipped += 1,
+        }
+    }
+    state.refresh()?;
+    Ok(ImportResult { created, skipped })
+}
+
+/// Split one imported line into question and answer on the separators people
+/// actually use.
+fn split_pair(line: &str) -> (String, String) {
+    for sep in ["\t", " :: ", "::", " ? ", " | "] {
+        if let Some((front, back)) = line.split_once(sep) {
+            if !front.trim().is_empty() && !back.trim().is_empty() {
+                return (front.trim().to_string(), back.trim().to_string());
+            }
+        }
+    }
+    (line.trim().to_string(), String::new())
+}
+
+/// Everything, as one Markdown document that reads well on its own.
+#[tauri::command]
+pub fn export_markdown(state: State<'_, AppState>) -> String {
+    let cards = state.cards_snapshot();
+    let mut out = String::from("# Micro Card export\n\n");
+    out.push_str(&format!(
+        "{} cards, exported {}\n\n",
+        cards.len(),
+        Local::now().format("%-d %B %Y")
+    ));
+
+    let mut decks: std::collections::BTreeMap<String, Vec<&Card>> = Default::default();
+    for card in &cards {
+        decks
+            .entry(card.deck.clone().unwrap_or_else(|| "Inbox".to_string()))
+            .or_default()
+            .push(card);
+    }
+
+    for (deck, cards) in decks {
+        out.push_str(&format!("\n## {deck}\n"));
+        for card in cards {
+            out.push_str(&format!("\n### {}\n\n{}\n", card.title, card.front.trim()));
+            if !card.back.trim().is_empty() {
+                out.push_str(&format!("\n**Answer:** {}\n", card.back.trim()));
+            }
+            if !card.tags.is_empty() {
+                out.push_str(&format!(
+                    "\n_{}_\n",
+                    card.tags
+                        .iter()
+                        .map(|t| format!("#{t}"))
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                ));
+            }
+        }
+    }
+    out
+}
+
+/// Write a file the user chose in the save dialog.
+#[tauri::command]
+pub fn write_text_file(path: String, contents: String) -> Result<()> {
+    std::fs::write(&path, contents)?;
+    Ok(())
+}
+
+/// Read a file the user chose in the open dialog.
+#[tauri::command]
+pub fn read_text_file(path: String) -> Result<String> {
+    Ok(std::fs::read_to_string(&path)?)
+}
+
+/// A handful of cards that show what the app is for. Offered on the empty
+/// home screen, never forced.
+#[tauri::command]
+pub fn add_sample_cards(state: State<'_, AppState>) -> Result<Library> {
+    let samples: [(&str, &str, &str); 4] = [
+        (
+            "qa",
+            "What makes a card worth keeping?",
+            "One idea, in your own words, that you would be annoyed to forget.",
+        ),
+        (
+            "note",
+            "Capture first, organise later.\n\nA thought written down in five seconds beats a perfect folder tree you never fill.",
+            "",
+        ),
+        (
+            "qa",
+            "Why review on a schedule?",
+            "Because seeing a card just before you would have forgotten it is what moves it into long-term memory.",
+        ),
+        (
+            "idea",
+            "Try writing one card for every article you finish this week.",
+            "",
+        ),
+    ];
+
+    for (kind, front, back) in samples {
+        let draft = CardDraft {
+            id: None,
+            kind: Some(kind.to_string()),
+            title: None,
+            front: front.to_string(),
+            back: (!back.is_empty()).then(|| back.to_string()),
+            tags: Some(vec!["example".to_string()]),
+            deck: Some("Getting started".to_string()),
+            starred: None,
+        };
+        save_draft(&state, draft)?;
+    }
+    state.refresh()?;
+    library(&state)
 }

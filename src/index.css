@@ -7,36 +7,53 @@
  * phone outdoors; dark is applied by adding `.dark` to <html>.
  */
 @layer base {
+  /*
+   * One green system, two themes. Light is a warm off-white with a faint
+   * green cast; dark is a deep forest ground rather than pure black, which
+   * keeps the cards readable at night without glowing.
+   *
+   * `--brand` carries the identity, `--info` (teal) separates Q & A cards
+   * from it, and `--accent` (amber) is the only warm colour — reserved for
+   * streaks and due badges so they stand out against all the green.
+   */
   :root {
-    --bg: 250 40% 98%;
+    --bg: 150 30% 97%;
     --surface: 0 0% 100%;
-    --raised: 255 45% 96%;
-    --line: 255 20% 89%;
-    --ink: 258 35% 12%;
-    --muted: 256 12% 45%;
-    --brand: 262 72% 54%;
-    --brand-soft: 262 80% 94%;
-    --accent: 24 95% 53%;
-    --good: 152 55% 40%;
-    --warn: 38 92% 50%;
-    --danger: 0 72% 51%;
-    --shadow: 258 40% 25%;
+    --raised: 150 24% 94%;
+    --line: 152 16% 86%;
+    --ink: 160 32% 10%;
+    --muted: 158 10% 40%;
+    --brand: 158 66% 30%;
+    --brand-soft: 152 52% 91%;
+    --accent: 30 92% 42%;
+    /* Text drawn on top of a brand or accent fill. Dark themes brighten those
+       fills, so white stops being readable and the ink has to invert. */
+    --brand-ink: 0 0% 100%;
+    --accent-ink: 0 0% 100%;
+    --info: 189 78% 31%;
+    --good: 158 66% 30%;
+    --warn: 38 90% 40%;
+    --danger: 0 70% 45%;
+    --shadow: 160 40% 18%;
   }
 
   .dark {
-    --bg: 258 32% 7%;
-    --surface: 257 26% 12%;
-    --raised: 256 24% 17%;
-    --line: 256 18% 24%;
-    --ink: 255 25% 96%;
-    --muted: 256 12% 68%;
-    --brand: 262 85% 72%;
-    --brand-soft: 262 40% 22%;
-    --accent: 27 96% 61%;
-    --good: 152 50% 55%;
-    --warn: 38 92% 62%;
-    --danger: 0 75% 68%;
-    --shadow: 258 60% 2%;
+    --bg: 165 26% 7%;
+    --surface: 164 20% 11%;
+    --raised: 163 17% 16%;
+    --line: 162 13% 24%;
+    --ink: 150 20% 95%;
+    --muted: 155 10% 66%;
+    --brand: 152 52% 58%;
+    --brand-soft: 158 38% 18%;
+    --accent: 35 90% 62%;
+    --brand-ink: 165 45% 8%;
+    --accent-ink: 30 50% 10%;
+    --info: 187 65% 58%;
+    --good: 152 52% 58%;
+    --warn: 40 88% 60%;
+    --danger: 0 72% 68%;
+    --shadow: 165 60% 2%;
   }
 
   html,
@@ -47,6 +64,8 @@
 
   body {
     @apply bg-bg text-ink font-sans antialiased;
+    /* Set from the text-size setting, so every rem-based size follows it. */
+    font-size: calc(1rem * var(--text-scale, 1));
     /* Never bounce the whole page — only lists scroll. */
     overscroll-behavior: none;
     -webkit-tap-highlight-color: transparent;

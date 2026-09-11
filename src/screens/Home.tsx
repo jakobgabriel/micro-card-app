@@ -2,28 +2,33 @@
 import { useMemo } from "react";
 import {
   ArrowRight,
+  BarChart3,
   Flame,
+  Github,
   Inbox,
   PenLine,
+  RefreshCcw,
   Settings2,
   Sparkles,
+  Wand2,
 } from "lucide-react";
 
 import { CardTile } from "@/components/CardTile";
 import { Button, EmptyState, IconButton, ProgressRing } from "@/components/ui";
 import { useStore } from "@/lib/store";
 import type { Card } from "@/lib/types";
-import { isDue } from "@/lib/utils";
+import { cn, isDue } from "@/lib/utils";
 
 interface Props {
   onCapture: () => void;
   onOpenCard: (card: Card) => void;
   onReview: () => void;
   onSettings: () => void;
+  onStats: () => void;
 }
 
-export function Home({ onCapture, onOpenCard, onReview, onSettings }: Props) {
-  const { library } = useStore();
+export function Home({ onCapture, onOpenCard, onReview, onSettings, onStats }: Props) {
+  const { library, github, syncing, sync, addSampleCards } = useStore();
   const stats = library?.stats;
   const cards = library?.cards ?? [];
 
@@ -46,11 +51,18 @@ export function Home({ onCapture, onOpenCard, onReview, onSettings }: Props) {
         </div>
         <div className="flex items-center gap-1">
           {(stats?.streak_days ?? 0) > 0 && (
-            <span className="chip bg-accent/15 text-accent">
+            <button
+              onClick={onStats}
+              className="chip bg-accent/15 text-accent active:scale-95"
+              aria-label={`${stats?.streak_days} day streak — see progress`}
+            >
               <Flame className="h-3.5 w-3.5" />
               {stats?.streak_days}
-            </span>
+            </button>
           )}
+          <IconButton label="Progress" onClick={onStats}>
+            <BarChart3 className="h-5 w-5" />
+          </IconButton>
           <IconButton label="Settings" onClick={onSettings}>
             <Settings2 className="h-5 w-5" />
           </IconButton>
@@ -60,14 +72,14 @@ export function Home({ onCapture, onOpenCard, onReview, onSettings }: Props) {
       {/* Primary action. Deliberately the largest thing on the screen. */}
       <button
         onClick={onCapture}
-        className="mt-4 flex w-full items-center gap-3 rounded-3xl bg-brand p-5 text-left text-white shadow-lift transition active:scale-[.98]"
+        className="mt-4 flex w-full items-center gap-3 rounded-3xl bg-brand p-5 text-left text-brand-ink shadow-lift transition active:scale-[.98]"
       >
         <PenLine className="h-6 w-6 shrink-0" />
         <div className="min-w-0">
           <p className="text-lg font-bold leading-tight">Capture a card</p>
-          <p className="text-sm text-white/80">One idea, a few seconds.</p>
+          <p className="text-sm text-brand-ink/75">One idea, a few seconds.</p>
         </div>
-        <ArrowRight className="ml-auto h-5 w-5 shrink-0 opacity-80" />
+        <ArrowRight className="ml-auto h-5 w-5 shrink-0 opacity-70" />
       </button>
 
       {dueCount > 0 && (
@@ -111,9 +123,19 @@ export function Home({ onCapture, onOpenCard, onReview, onSettings }: Props) {
           title="Nothing captured yet"
           description="Write down the next thing you want to remember — a fact, a quote, a half-formed idea. You can tidy it up later."
           action={
-            <Button className="mt-2" onClick={onCapture} icon={<PenLine className="h-4 w-4" />}>
-              Write your first card
-            </Button>
+            <div className="mt-2 flex flex-col items-center gap-2">
+              <Button onClick={onCapture} icon={<PenLine className="h-4 w-4" />}>
+                Write your first card
+              </Button>
+              <Button
+                variant="ghost"
+                className="text-muted"
+                onClick={() => void addSampleCards()}
+                icon={<Wand2 className="h-4 w-4" />}
+              >
+                Or add four example cards
+              </Button>
+            </div>
           }
         />
       ) : (
@@ -124,12 +146,26 @@ export function Home({ onCapture, onOpenCard, onReview, onSettings }: Props) {
         </div>
       )}
 
-      {library?.local_mode && recent.length > 0 && (
+      {github?.connected && (
+        <button
+          onClick={() => void sync()}
+          disabled={syncing}
+          className="mt-4 flex w-full items-center gap-3 rounded-2xl border border-line px-4 py-3 text-left active:bg-raised"
+        >
+          <Github className="h-4 w-4 shrink-0 text-muted" />
+          <span className="min-w-0 flex-1 truncate text-sm text-muted">
+            {syncing ? "Syncing…" : github.repo}
+          </span>
+          <RefreshCcw className={cn("h-4 w-4 shrink-0 text-muted", syncing && "animate-spin")} />
+        </button>
+      )}
+
+      {library?.local_mode && !github?.connected && recent.length > 0 && (
         <div className="mt-5 flex items-start gap-3 rounded-2xl border border-dashed border-line p-4 text-sm text-muted">
           <Inbox className="mt-0.5 h-4 w-4 shrink-0" />
           <p className="leading-relaxed">
-            Cards are stored on this device only. Connect an Obsidian vault in
-            Settings and they move across with you.
+            Cards are stored on this device only. Connect an Obsidian vault or
+            a GitHub repository in Settings and they travel with you.
           </p>
         </div>
       )}

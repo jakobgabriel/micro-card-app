@@ -85,7 +85,11 @@ export function searchCards(cards: Card[], query: string): Card[] {
   });
 }
 
-/** Colour + label per card kind, used by the tile and the editor. */
+/**
+ * Colour + label per card kind. In a green system the brand colour is already
+ * green, so Q & A gets the teal `info` token rather than another green — the
+ * two must stay distinguishable at a glance in a list.
+ */
 export const KIND_STYLE: Record<
   CardKind,
   { label: string; chip: string; dot: string }
@@ -97,8 +101,8 @@ export const KIND_STYLE: Record<
   },
   qa: {
     label: "Q & A",
-    chip: "bg-good/15 text-good",
-    dot: "bg-good",
+    chip: "bg-info/15 text-info",
+    dot: "bg-info",
   },
   idea: {
     label: "Idea",
@@ -146,4 +150,83 @@ export function extractInlineTags(text: string): string[] {
     if (/[a-zA-Z]/.test(tag) && !out.includes(tag)) out.push(tag);
   }
   return out;
+}
+
+/** `2026-09-11` -> `11 Sep`, for chart labels. */
+export function shortDate(iso: string): string {
+  const date = new Date(`${iso}T00:00:00`);
+  if (Number.isNaN(date.getTime())) return iso;
+  return date.toLocaleDateString(undefined, { day: "numeric", month: "short" });
+}
+
+/** Is this ISO date today, in the viewer's own timezone? */
+export function isToday(iso: string): boolean {
+  const date = new Date(`${iso}T00:00:00`);
+  return date.toDateString() === new Date().toDateString();
+}
+
+/**
+ * Resolve a `[[wikilink]]` to a card. Obsidian matches on the note name, so
+ * the file name is tried first and the title second.
+ */
+export function resolveLink(cards: Card[], target: string): Card | undefined {
+  const wanted = target.trim().toLowerCase();
+  return (
+    cards.find(
+      (card) =>
+        card.path
+          .split("/")
+          .pop()
+          ?.replace(/\.md$/, "")
+          .toLowerCase() === wanted,
+    ) ?? cards.find((card) => card.title.toLowerCase() === wanted)
+  );
+}
+
+/** Cards whose text links to this one — the other half of a wikilink. */
+export function backlinks(cards: Card[], card: Card): Card[] {
+  const names = new Set(
+    [card.title, card.path.split("/").pop()?.replace(/\.md$/, "") ?? ""]
+      .filter(Boolean)
+      .map((n) => n.toLowerCase()),
+  );
+  return cards.filter(
+    (other) =>
+      other.id !== card.id &&
+      other.links.some((link) => names.has(link.trim().toLowerCase())),
+  );
+}
+
+/** Insert Markdown around the current selection of a textarea. */
+export function wrapSelection(
+  el: HTMLTextAreaElement,
+  before: string,
+  after = before,
+): { text: string; cursor: number } {
+  const { selectionStart: start, selectionEnd: end, value } = el;
+  const selected = value.slice(start, end);
+  const text = `${value.slice(0, start)}${before}${selected}${after}${value.slice(end)}`;
+  // With nothing selected, drop the cursor between the markers.
+  const cursor = selected ? end + before.length + after.length : start + before.length;
+  return { text, cursor };
+}
+
+/** Prefix every selected line, for lists and quotes. */
+export function prefixLines(
+  el: HTMLTextAreaElement,
+  prefix: string,
+): { text: string; cursor: number } {
+  const { selectionStart: start, selectionEnd: end, value } = el;
+  const lineStart = value.lastIndexOf("\n", start - 1) + 1;
+  const lineEnd = value.indexOf("\n", end);
+  const sliceEnd = lineEnd === -1 ? value.length : lineEnd;
+  const block = value.slice(lineStart, sliceEnd);
+  const updated = block
+    .split("\n")
+    .map((line) => (line.startsWith(prefix) ? line.slice(prefix.length) : prefix + line))
+    .join("\n");
+  return {
+    text: value.slice(0, lineStart) + updated + value.slice(sliceEnd),
+    cursor: lineStart + updated.length,
+  };
 }

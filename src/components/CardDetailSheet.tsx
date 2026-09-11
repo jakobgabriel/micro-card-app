@@ -3,6 +3,7 @@ import {
   CalendarClock,
   ExternalLink,
   FileText,
+  Link2,
   Pencil,
   Star,
   Trash2,
@@ -15,21 +16,43 @@ import { useToast } from "./Toast";
 import { api, errorMessage } from "@/lib/api";
 import { useStore } from "@/lib/store";
 import type { Card } from "@/lib/types";
-import { KIND_STYLE, cn, isDue, timeAgo, untilDue } from "@/lib/utils";
+import {
+  KIND_STYLE,
+  backlinks,
+  cn,
+  isDue,
+  resolveLink,
+  timeAgo,
+  untilDue,
+} from "@/lib/utils";
 
 interface Props {
   card: Card | null;
   onClose: () => void;
   onEdit: (card: Card) => void;
+  /** Open another card, for wikilinks and backlinks. */
+  onOpen: (card: Card) => void;
 }
 
-export function CardDetailSheet({ card, onClose, onEdit }: Props) {
-  const { deleteCard, saveCard } = useStore();
+export function CardDetailSheet({ card, onClose, onEdit, onOpen }: Props) {
+  const { library, deleteCard, saveCard } = useStore();
   const toast = useToast();
   const [busy, setBusy] = useState(false);
 
   if (!card) return null;
   const style = KIND_STYLE[card.kind];
+  const cards = library?.cards ?? [];
+  const linkedFrom = backlinks(cards, card);
+
+  /** Follow a `[[wikilink]]`; offer to create the card when it does not exist. */
+  const followLink = (target: string) => {
+    const match = resolveLink(cards, target);
+    if (match) {
+      onOpen(match);
+    } else {
+      toast.show(`No card called “${target}” yet.`, { tone: "info" });
+    }
+  };
 
   const remove = async () => {
     setBusy(true);
@@ -108,7 +131,7 @@ export function CardDetailSheet({ card, onClose, onEdit }: Props) {
         </IconButton>
       </div>
 
-      <Markdown text={card.front} />
+      <Markdown text={card.front} onLink={followLink} />
 
       {card.kind === "qa" && card.back && (
         <>
@@ -119,7 +142,7 @@ export function CardDetailSheet({ card, onClose, onEdit }: Props) {
             </span>
             <div className="h-px flex-1 bg-line" />
           </div>
-          <Markdown text={card.back} />
+          <Markdown text={card.back} onLink={followLink} />
         </>
       )}
 
@@ -130,6 +153,27 @@ export function CardDetailSheet({ card, onClose, onEdit }: Props) {
               #{tag}
             </span>
           ))}
+        </div>
+      )}
+
+      {linkedFrom.length > 0 && (
+        <div className="mt-6">
+          <p className="flex items-center gap-1.5 px-1 pb-2 text-xs font-bold uppercase tracking-wide text-muted">
+            <Link2 className="h-3.5 w-3.5" />
+            Linked from
+          </p>
+          <div className="space-y-1.5">
+            {linkedFrom.map((other) => (
+              <button
+                key={other.id}
+                onClick={() => onOpen(other)}
+                className="flex w-full items-center gap-2 rounded-xl bg-raised px-3 py-2.5 text-left active:scale-[.98]"
+              >
+                <span className={cn("h-2 w-2 shrink-0 rounded-full", KIND_STYLE[other.kind].dot)} />
+                <span className="truncate text-sm font-medium">{other.title}</span>
+              </button>
+            ))}
+          </div>
         </div>
       )}
 

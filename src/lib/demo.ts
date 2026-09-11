@@ -26,6 +26,7 @@ interface DemoState {
   settings: Settings;
   reviewedToday: number;
   day: string;
+  lastSynced?: string;
 }
 
 const defaultSettings: Settings = {
@@ -33,8 +34,13 @@ const defaultSettings: Settings = {
   folder: "Cards",
   default_tag: "card",
   onboarded: false,
-  dark_mode: true,
+  theme: "system",
+  text_scale: 1,
   daily_goal: 20,
+  session_size: 20,
+  reminder_hour: null,
+  github: null,
+  github_auto_sync: true,
 };
 
 function seedCards(): Card[] {
@@ -172,18 +178,49 @@ function statsFor(state: DemoState): Stats {
     for (const tag of card.tags) tags.set(tag, (tags.get(tag) ?? 0) + 1);
   }
 
+  const kinds = new Map<string, number>();
+  for (const card of state.cards) kinds.set(card.kind, (kinds.get(card.kind) ?? 0) + 1);
+
+  const day = (offset: number) => {
+    const d = new Date();
+    d.setDate(d.getDate() + offset);
+    return d.toISOString().slice(0, 10);
+  };
+
+  const forecast = new Map<string, number>();
+  for (const card of state.cards) {
+    if (card.kind !== "qa") continue;
+    const dueDate = new Date(card.review.due);
+    const key = dueDate.getTime() <= now ? day(0) : dueDate.toISOString().slice(0, 10);
+    if (key <= day(13)) forecast.set(key, (forecast.get(key) ?? 0) + 1);
+  }
+
   return {
     total: state.cards.length,
     due,
     captured_today: capturedToday,
     reviewed_today: state.reviewedToday,
     streak_days: state.reviewedToday > 0 || capturedToday > 0 ? 1 : 0,
+    best_streak: Math.max(1, state.reviewedToday > 0 ? 1 : 0),
     decks: [...decks.entries()]
       .map(([name, v]) => ({ name, ...v }))
       .sort((a, b) => b.count - a.count),
     tags: [...tags.entries()]
       .map(([name, count]) => ({ name, count }))
       .sort((a, b) => b.count - a.count),
+    kinds: [...kinds.entries()]
+      .map(([kind, count]) => ({ kind: kind as Card["kind"], count }))
+      .sort((a, b) => b.count - a.count),
+    activity: Array.from({ length: 84 }, (_, i) => {
+      const date = day(i - 83);
+      // A plausible-looking history so the chart is not a blank rectangle.
+      const seed = (i * 7919) % 11;
+      return { date, count: i > 76 ? (i === 83 ? state.reviewedToday : seed % 5) : seed % 4 };
+    }),
+    forecast: Array.from({ length: 14 }, (_, i) => ({
+      date: day(i),
+      count: forecast.get(day(i)) ?? 0,
+    })),
   };
 }
 
@@ -341,6 +378,230 @@ export async function demoInvoke<T>(
 
     case "obsidian_uri":
       throw new Error("Connect a vault first to open cards in Obsidian.");
+
+    case "github_status":
+      return done({
+        connected: state.settings.github !== null,
+        repo: state.settings.github
+          ? `${state.settings.github.owner}/${state.settings.github.repo}`
+          : null,
+        branch: state.settings.github?.branch ?? null,
+        auto_sync: state.settings.github_auto_sync,
+        last_synced: state.lastSynced ?? null,
+        last_commit: null,
+        tracked_files: state.settings.github ? state.cards.length : 0,
+      }) as Promise<T>;
+
+    case "github_connect": {
+      const connection = args?.connection as { repo: string; branch?: string };
+      const [owner, repo] = connection.repo.replace(/^.*github\.com[:/]/, "").split("/");
+      if (!owner || !repo) throw new Error("Use owner/repo, for example octocat/notes.");
+      state.settings.github = {
+        owner,
+        repo: repo.replace(/\.git$/, ""),
+        branch: connection.branch || "main",
+      };
+      state.settings.onboarded = true;
+      return done({
+        full_name: `${owner}/${repo}`,
+        private: true,
+        default_branch: "main",
+        can_write: true,
+        existing_cards: 0,
+      }) as Promise<T>;
+    }
+
+    case "github_disconnect":
+      state.settings.github = null;
+      return done(library(state)) as Promise<T>;
+
+    case "sync_now": {
+      if (!state.settings.github) throw new Error("No repository is connected yet.");
+      state.lastSynced = new Date().toISOString().slice(0, 16).replace("T", " ");
+      return done({
+        pulled: 0,
+        pushed: state.cards.length,
+        deleted_local: 0,
+        deleted_remote: 0,
+        conflicts: [],
+        commit: "demo",
+        summary: `Synced — ${state.cards.length} out`,
+      }) as Promise<T>;
+    }
+
+    case "rename_tag": {
+      const from = (args?.from as string).replace(/^#/, "");
+      const to = (args?.to as string).replace(/^#/, "");
+      let changed = 0;
+      state.cards = state.cards.map((card) => {
+        if (!card.tags.includes(from)) return card;
+        changed += 1;
+        const tags = card.tags.filter((t) => t !== from);
+        if (to && !tags.includes(to)) tags.push(to);
+        const swap = (text: string) =>
+          text.replace(new RegExp(`(^|\\s)#${from}\\b`, "g"), to ? `$1#${to}` : "$1");
+        return { ...card, tags, front: swap(card.front), back: swap(card.back) };
+      });
+      return done({ changed }) as Promise<T>;
+    }
+
+    case "rename_deck": {
+      const from = args?.from as string;
+      const to = (args?.to as string).trim();
+      let changed = 0;
+      state.cards = state.cards.map((card) => {
+        if ((card.deck ?? "Inbox") !== from) return card;
+        changed += 1;
+        return { ...card, deck: to && to !== "Inbox" ? to : null };
+      });
+      return done({ changed }) as Promise<T>;
+    }
+
+    case "bulk_edit": {
+      const edit = args?.edit as {
+        ids: string[];
+        add_tags?: string[];
+        remove_tags?: string[];
+        deck?: string;
+        starred?: boolean;
+      };
+      let changed = 0;
+      state.cards = state.cards.map((card) => {
+        if (!edit.ids.includes(card.id)) return card;
+        changed += 1;
+        const tags = [...card.tags.filter((t) => !(edit.remove_tags ?? []).includes(t))];
+        for (const tag of edit.add_tags ?? []) if (!tags.includes(tag)) tags.push(tag);
+        return {
+          ...card,
+          tags,
+          deck:
+            edit.deck === undefined
+              ? card.deck
+              : edit.deck && edit.deck !== "Inbox"
+                ? edit.deck
+                : null,
+          starred: edit.starred ?? card.starred,
+        };
+      });
+      return done({ changed }) as Promise<T>;
+    }
+
+    case "bulk_delete": {
+      const ids = args?.ids as string[];
+      const removed = state.cards.filter((c) => ids.includes(c.id));
+      state.cards = state.cards.filter((c) => !ids.includes(c.id));
+      return done(
+        removed.map((c) => ({ id: c.id, trashed_path: c.path })) as Deleted[],
+      ) as Promise<T>;
+    }
+
+    case "restore_many":
+      return done(library(state)) as Promise<T>;
+
+    case "review_session": {
+      const request = (args?.request ?? {}) as {
+        deck?: string | null;
+        tag?: string | null;
+        cram?: boolean;
+        limit?: number;
+      };
+      const now = Date.now();
+      const cards = state.cards
+        .filter((c) => c.kind === "qa")
+        .filter((c) => request.cram || new Date(c.review.due).getTime() <= now)
+        .filter((c) => !request.deck || (c.deck ?? "Inbox") === request.deck)
+        .filter((c) => !request.tag || c.tags.includes(request.tag))
+        .sort((a, b) => b.review.lapses - a.review.lapses)
+        .slice(0, request.limit ?? state.settings.session_size);
+      return done(cards) as Promise<T>;
+    }
+
+    case "restore_review": {
+      const id = args?.id as string;
+      const review = args?.review as Card["review"];
+      state.cards = state.cards.map((c) => (c.id === id ? { ...c, review } : c));
+      state.reviewedToday = Math.max(0, state.reviewedToday - 1);
+      return done(state.cards.find((c) => c.id === id)!) as Promise<T>;
+    }
+
+    case "find_similar": {
+      const words = (text: string) =>
+        new Set(
+          text
+            .toLowerCase()
+            .split(/[^a-z0-9]+/)
+            .filter((w) => w.length > 3),
+        );
+      const target = words(args?.text as string);
+      if (target.size < 3) return done([]) as Promise<T>;
+      const hits = state.cards
+        .filter((c) => c.id !== args?.exclude)
+        .map((card) => {
+          const other = words(`${card.front} ${card.back}`);
+          const shared = [...target].filter((w) => other.has(w)).length;
+          const union = target.size + other.size - shared;
+          return { id: card.id, title: card.title, score: shared / Math.max(1, union) };
+        })
+        .filter((hit) => hit.score >= 0.5)
+        .sort((a, b) => b.score - a.score)
+        .slice(0, 3);
+      return done(hits) as Promise<T>;
+    }
+
+    case "import_text": {
+      const request = args?.request as {
+        text: string;
+        split?: string;
+        deck?: string;
+        tags?: string[];
+      };
+      const chunks =
+        request.split === "blocks"
+          ? request.text.split("\n\n")
+          : request.text.split("\n");
+      let created = 0;
+      for (const raw of chunks.map((c) => c.trim()).filter(Boolean)) {
+        const [front, back] = raw.includes("\t")
+          ? raw.split("\t")
+          : raw.includes("::")
+            ? raw.split("::")
+            : [raw, ""];
+        const now = new Date().toISOString();
+        state.cards.unshift({
+          id: `demo_${Date.now().toString(36)}_${created}`,
+          kind: back.trim() ? "qa" : "note",
+          title: titleFromText(front),
+          front: front.trim(),
+          back: back.trim(),
+          tags: [...(request.tags ?? []), state.settings.default_tag].filter(Boolean),
+          deck: request.deck ?? null,
+          created: now,
+          updated: now,
+          starred: false,
+          review: { due: now, interval: 0, ease: 2.5, reps: 0, lapses: 0 },
+          path: `Cards/${titleFromText(front)}.md`,
+          links: [],
+        });
+        created += 1;
+      }
+      return done({ created, skipped: 0 }) as Promise<T>;
+    }
+
+    case "export_markdown":
+      return done(
+        `# Micro Card export\n\n${state.cards
+          .map((c) => `### ${c.title}\n\n${c.front}`)
+          .join("\n\n")}\n`,
+      ) as Promise<T>;
+
+    case "write_text_file":
+    case "read_text_file":
+      throw new Error("Files are only available in the installed app.");
+
+    case "add_sample_cards": {
+      state.cards = [...seedCards(), ...state.cards];
+      return done(library(state)) as Promise<T>;
+    }
 
     default:
       throw new Error(`Unknown command: ${cmd}`);

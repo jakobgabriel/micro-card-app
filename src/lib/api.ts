@@ -8,12 +8,22 @@ import { invoke as tauriInvoke } from "@tauri-apps/api/core";
 
 import { demoInvoke, isDemoMode } from "./demo";
 import type {
+  BulkEdit,
+  BulkResult,
   Card,
   CardDraft,
   Deleted,
+  GithubStatus,
   Grade,
+  ImportResult,
   Library,
+  RepoInfo,
+  Review,
+  SessionRequest,
   Settings,
+  SettingsPatch,
+  Similar,
+  SyncReport,
   VaultCandidate,
 } from "./types";
 
@@ -26,8 +36,7 @@ export const api = {
   getLibrary: () => call<Library>("get_library"),
   refresh: () => call<Library>("refresh_library"),
   getSettings: () => call<Settings>("get_settings"),
-  updateSettings: (patch: Partial<Settings>) =>
-    call<Library>("update_settings", { patch }),
+  updateSettings: (patch: SettingsPatch) => call<Library>("update_settings", { patch }),
   detectVaults: () => call<VaultCandidate[]>("detect_vaults"),
   setVault: (path: string, folder?: string) =>
     call<Library>("set_vault", { choice: { path, folder } }),
@@ -41,6 +50,46 @@ export const api = {
   dueCards: (limit?: number) => call<Card[]>("due_cards", { limit }),
   gradeCard: (id: string, grade: Grade) => call<Card>("grade_card", { id, grade }),
   obsidianUri: (id: string) => call<string>("obsidian_uri", { id }),
+
+  // GitHub repository sync
+  githubStatus: () => call<GithubStatus>("github_status"),
+  githubConnect: (connection: {
+    token: string;
+    repo: string;
+    branch?: string;
+    folder?: string;
+  }) => call<RepoInfo>("github_connect", { connection }),
+  githubDisconnect: () => call<Library>("github_disconnect"),
+  syncNow: () => call<SyncReport>("sync_now"),
+
+  // Organising
+  renameTag: (from: string, to: string) => call<BulkResult>("rename_tag", { from, to }),
+  renameDeck: (from: string, to: string) => call<BulkResult>("rename_deck", { from, to }),
+  bulkEdit: (edit: BulkEdit) => call<BulkResult>("bulk_edit", { edit }),
+  bulkDelete: (ids: string[]) => call<Deleted[]>("bulk_delete", { ids }),
+  restoreMany: (paths: string[]) => call<Library>("restore_many", { paths }),
+
+  // Review
+  reviewSession: (request: SessionRequest) =>
+    call<Card[]>("review_session", { request }),
+  restoreReview: (id: string, review: Review) =>
+    call<Card>("restore_review", { id, review }),
+
+  // Capture helpers, import and export
+  findSimilar: (text: string, exclude?: string) =>
+    call<Similar[]>("find_similar", { text, exclude }),
+  importText: (request: {
+    text: string;
+    split?: "lines" | "blocks";
+    kind?: string;
+    deck?: string;
+    tags?: string[];
+  }) => call<ImportResult>("import_text", { request }),
+  exportMarkdown: () => call<string>("export_markdown"),
+  writeTextFile: (path: string, contents: string) =>
+    call<void>("write_text_file", { path, contents }),
+  readTextFile: (path: string) => call<string>("read_text_file", { path }),
+  addSampleCards: () => call<Library>("add_sample_cards"),
 };
 
 /** Human-readable message for anything thrown by a command. */

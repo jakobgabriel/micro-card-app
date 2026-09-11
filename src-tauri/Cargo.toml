@@ -19,6 +19,7 @@ tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 tauri-plugin-os = "2"
 tauri-plugin-opener = "2"
+tauri-plugin-notification = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
@@ -26,6 +27,19 @@ chrono = { version = "0.4", features = ["serde"] }
 thiserror = "2"
 walkdir = "2"
 rand = "0.8"
+sha1 = "0.10"
+base64 = "0.22"
+# rustls rather than native-tls: no OpenSSL to cross-compile for Android.
+# Native roots so the platform trust store is honoured — that is what makes the
+# app work behind a corporate proxy, and on Android where the system store is
+# where user-installed certificates live.
+reqwest = { version = "0.12", default-features = false, features = [
+    "blocking",
+    "json",
+    "rustls-tls-native-roots",
+    "charset",
+    "http2",
+] }
 
 [profile.release]
 codegen-units = 1

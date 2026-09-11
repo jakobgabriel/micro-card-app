@@ -16,7 +16,7 @@ interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
 }
 
 const VARIANTS: Record<Variant, string> = {
-  primary: "bg-brand text-white shadow-lift active:bg-brand/90 disabled:bg-brand/50",
+  primary: "bg-brand text-brand-ink shadow-lift active:bg-brand/90",
   secondary: "bg-raised text-ink border border-line active:bg-line",
   ghost: "text-ink active:bg-raised",
   soft: "bg-brand-soft text-brand active:bg-brand/20",
@@ -39,7 +39,7 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
       className={cn(
         "inline-flex items-center justify-center gap-2 font-semibold",
         "transition-[transform,background-color] duration-100 active:scale-[.97]",
-        "disabled:pointer-events-none disabled:opacity-60",
+        "disabled:pointer-events-none disabled:opacity-45",
         VARIANTS[variant],
         SIZES[size],
         block && "w-full",
@@ -173,7 +173,7 @@ export function SegmentedControl<T extends string>({
             className={cn(
               "flex h-10 shrink-0 items-center gap-1.5 rounded-full px-3.5 text-sm font-semibold transition",
               active
-                ? "bg-brand text-white shadow-lift"
+                ? "bg-brand text-brand-ink shadow-lift"
                 : "bg-raised text-muted active:bg-line",
             )}
           >
@@ -233,7 +233,7 @@ export function Chip({
       }
       className={cn(
         "chip transition",
-        active ? "bg-brand text-white" : "bg-raised text-muted",
+        active ? "bg-brand text-brand-ink" : "bg-raised text-muted",
         onClick && "active:scale-95",
         className,
       )}

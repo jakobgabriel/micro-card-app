@@ -8,8 +8,23 @@
  *    in the way.
  *  - Drafts survive an accidental close, a phone call, or a crash.
  */
-import { useEffect, useMemo, useRef, useState } from "react";
-import { BookOpen, Hash, Lightbulb, ListTodo, Quote, StickyNote, Trash2 } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  AlertCircle,
+  Bold,
+  BookOpen,
+  Code,
+  Hash,
+  Heading,
+  Italic,
+  Lightbulb,
+  Link2,
+  List,
+  ListTodo,
+  Quote,
+  StickyNote,
+  Trash2,
+} from "lucide-react";
 
 import { Sheet } from "./Sheet";
 import { Button, Chip, SegmentedControl } from "./ui";
@@ -17,7 +32,9 @@ import { useToast } from "./Toast";
 import { errorMessage } from "@/lib/api";
 import { useStore } from "@/lib/store";
 import type { Card, CardKind } from "@/lib/types";
-import { cn, extractInlineTags } from "@/lib/utils";
+import { api } from "@/lib/api";
+import type { Similar } from "@/lib/types";
+import { cn, extractInlineTags, prefixLines, wrapSelection } from "@/lib/utils";
 
 const DRAFT_KEY = "micro-card-draft-v1";
 
@@ -48,6 +65,8 @@ export function CaptureSheet({ open, onClose, editing }: CaptureSheetProps) {
   const { library, saveCard } = useStore();
   const toast = useToast();
   const textRef = useRef<HTMLTextAreaElement>(null);
+  const backRef = useRef<HTMLTextAreaElement>(null);
+  const [activeField, setActiveField] = useState<"front" | "back">("front");
 
   const [kind, setKind] = useState<CardKind>("note");
   const [front, setFront] = useState("");
@@ -57,6 +76,7 @@ export function CaptureSheet({ open, onClose, editing }: CaptureSheetProps) {
   const [tagDraft, setTagDraft] = useState("");
   const [showExtras, setShowExtras] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [similar, setSimilar] = useState<Similar[]>([]);
 
   const decks = useMemo(
     () =>
@@ -129,6 +149,45 @@ export function CaptureSheet({ open, onClose, editing }: CaptureSheetProps) {
     const id = setTimeout(() => textRef.current?.focus(), 260);
     return () => clearTimeout(id);
   }, [open]);
+
+  // Look for a card that already says this. Debounced, and never blocking:
+  // it is a note above the Save button, not a dialog in the way.
+  useEffect(() => {
+    if (!open || front.trim().length < 20) {
+      setSimilar([]);
+      return;
+    }
+    const timer = setTimeout(() => {
+      api
+        .findSimilar(`${front} ${back}`, editing?.id)
+        .then(setSimilar)
+        .catch(() => setSimilar([]));
+    }, 600);
+    return () => clearTimeout(timer);
+  }, [open, front, back, editing?.id]);
+
+  /**
+   * Apply a Markdown format to whichever box the cursor is in. The point of
+   * the toolbar is that nobody has to know what `**` means.
+   */
+  const format = useCallback(
+    (action: FormatAction) => {
+      const el = activeField === "back" ? backRef.current : textRef.current;
+      if (!el) return;
+      const result =
+        action.prefix !== undefined
+          ? prefixLines(el, action.prefix)
+          : wrapSelection(el, action.before ?? "", action.after ?? action.before ?? "");
+      if (activeField === "back") setBack(result.text);
+      else setFront(result.text);
+      // Put the cursor back where the user expects it to be.
+      requestAnimationFrame(() => {
+        el.focus();
+        el.setSelectionRange(result.cursor, result.cursor);
+      });
+    },
+    [activeField],
+  );
 
   const inlineTags = useMemo(() => extractInlineTags(`${front} ${back}`), [front, back]);
   const allTags = useMemo(
@@ -218,6 +277,7 @@ export function CaptureSheet({ open, onClose, editing }: CaptureSheetProps) {
         ref={textRef}
         value={front}
         onChange={(e) => setFront(e.target.value)}
+        onFocus={() => setActiveField("front")}
         onKeyDown={(e) => {
           if ((e.metaKey || e.ctrlKey) && e.key === "Enter") void submit(false);
         }}
@@ -230,14 +290,18 @@ export function CaptureSheet({ open, onClose, editing }: CaptureSheetProps) {
         )}
       />
 
+      <FormatBar onFormat={format} />
+
       {kind === "qa" && (
         <>
           <p className="px-1 pb-1.5 pt-3 text-xs font-bold uppercase tracking-wide text-muted">
             Answer
           </p>
           <textarea
+            ref={backRef}
             value={back}
             onChange={(e) => setBack(e.target.value)}
+            onFocus={() => setActiveField("back")}
             placeholder="…and the answer you want to recall."
             rows={4}
             className={cn(
@@ -338,11 +402,76 @@ export function CaptureSheet({ open, onClose, editing }: CaptureSheetProps) {
         </div>
       )}
 
+      {similar.length > 0 && (
+        <div className="mt-4 flex gap-3 rounded-2xl border border-warn/40 bg-warn/10 p-3.5 animate-fade-in">
+          <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-warn" />
+          <div className="min-w-0 text-sm">
+            <p className="font-semibold">You may already have this</p>
+            <ul className="mt-1 space-y-0.5 text-muted">
+              {similar.map((hit) => (
+                <li key={hit.id} className="truncate">
+                  {hit.title}
+                </li>
+              ))}
+            </ul>
+          </div>
+        </div>
+      )}
+
       <p className="px-1 py-4 text-xs leading-relaxed text-muted">
         Saved as a Markdown file in{" "}
         <span className="font-mono text-[11px]">{library?.vault_root ?? "your vault"}</span>
         {kind === "qa" && " — question and answer split by a ? line, so Obsidian's spaced repetition plugin reads it too."}
       </p>
     </Sheet>
+  );
+}
+
+/** One button on the formatting bar. */
+interface FormatAction {
+  /** Wrap the selection, e.g. `**` for bold. */
+  before?: string;
+  after?: string;
+  /** Or prefix whole lines, e.g. `- ` for a list. */
+  prefix?: string;
+}
+
+const FORMATS: { label: string; icon: JSX.Element; action: FormatAction }[] = [
+  { label: "Bold", icon: <Bold className="h-4 w-4" />, action: { before: "**" } },
+  { label: "Italic", icon: <Italic className="h-4 w-4" />, action: { before: "_" } },
+  { label: "Heading", icon: <Heading className="h-4 w-4" />, action: { prefix: "# " } },
+  { label: "List", icon: <List className="h-4 w-4" />, action: { prefix: "- " } },
+  { label: "Quote", icon: <Quote className="h-4 w-4" />, action: { prefix: "> " } },
+  { label: "Code", icon: <Code className="h-4 w-4" />, action: { before: "`" } },
+  {
+    label: "Link to another card",
+    icon: <Link2 className="h-4 w-4" />,
+    action: { before: "[[", after: "]]" },
+  },
+];
+
+/**
+ * Formatting without knowing Markdown. The bar sits under the text box rather
+ * than above it, where a phone keyboard would cover it.
+ */
+function FormatBar({ onFormat }: { onFormat: (action: FormatAction) => void }) {
+  return (
+    <div className="no-scrollbar flex gap-1 overflow-x-auto pt-2">
+      {FORMATS.map((item) => (
+        <button
+          key={item.label}
+          aria-label={item.label}
+          title={item.label}
+          // Keep the caret in the text box: losing focus would lose the
+          // selection the format is meant to apply to.
+          onMouseDown={(e) => e.preventDefault()}
+          onTouchStart={(e) => e.preventDefault()}
+          onClick={() => onFormat(item.action)}
+          className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-raised text-muted transition active:scale-90 active:bg-line"
+        >
+          {item.icon}
+        </button>
+      ))}
+    </div>
   );
 }

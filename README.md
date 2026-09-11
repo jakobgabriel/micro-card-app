@@ -1,29 +1,42 @@
 # Micro Card
 
 **Card-style knowledge capture for Android, built with Tauri — every card is a
-plain Markdown note in your own Obsidian vault.**
+plain Markdown note in your own Obsidian vault, your own GitHub repository, or
+both.**
 
 Write down one idea. Find it again months later. Micro Card is the fastest path
 between a thought and a note you actually keep, and it never takes your data
 hostage: there is no account, no database and no proprietary format. Cards *are*
-files, sitting in the vault you already sync.
+files — in the vault you already sync, in a repository you already own, or just
+on your phone until you decide otherwise.
 
 <p align="center">
   <img src="docs/screenshots/home.png" width="30%" alt="Home screen" />
   <img src="docs/screenshots/capture.png" width="30%" alt="Capture editor" />
   <img src="docs/screenshots/review.png" width="30%" alt="Review session" />
 </p>
+<p align="center">
+  <img src="docs/screenshots/browse.png" width="30%" alt="Decks and tags" />
+  <img src="docs/screenshots/stats.png" width="30%" alt="Progress" />
+  <img src="docs/screenshots/github.png" width="30%" alt="GitHub sync setup" />
+</p>
 
 ## What it does
 
 | | |
 | --- | --- |
-| **Capture in seconds** | One big text box, focused before the keyboard finishes animating. Type, hit save. Everything else — type, tags, deck — is optional and one tap away. |
+| **Capture in seconds** | One big text box, focused before the keyboard finishes animating. Type, hit save. Everything else — kind, tags, deck — is optional and one tap away. A formatting bar means nobody has to know what `**` does. |
 | **Five kinds of card** | Note, Q & A, Idea, Quote, To-do. Same file format; only the presentation and whether it comes back for review differ. |
 | **Real Obsidian sync** | The vault is the database. Micro Card reads and writes the `.md` files directly, so an edit in Obsidian shows up here and vice versa. |
-| **Spaced repetition** | Q & A cards come back when you are about to forget them. Three grades, each showing when the card returns — no guessing. |
-| **Nothing to lose** | Drafts survive a crash, deletes are undoable and land in the vault's `.trash`, and unknown frontmatter written by other plugins is preserved on save. |
-| **Works before setup** | No vault? Start capturing anyway. Connect one later and every card moves across. |
+| **GitHub repository sync** | Or keep the cards in a Git repository: one commit per sync, conflicts resolved by keeping both versions, and full history for free. See [`docs/github-sync.md`](docs/github-sync.md). |
+| **Spaced repetition** | Q & A cards come back when you are about to forget them. Three grades, each showing when the card returns — and an undo for the mis-tap. |
+| **Study what you choose** | Review everything due, or one deck or tag — including cards that are not due yet, for the night before an exam. |
+| **Find things again** | Search with `#tags` and `deck:name`, browse decks and tags, rename either everywhere at once, follow `[[wikilinks]]`, and see what links back. |
+| **Bulk tidying** | Hold a card to start selecting, then tag, star or delete a whole batch — with one undo for the batch. |
+| **Progress you can see** | A twelve-week activity grid, a two-week forecast of what falls due, and an optional daily reminder. |
+| **Nothing to lose** | Drafts survive a crash, deletes are undoable and land in the vault's `.trash`, near-duplicates are flagged before you save, and frontmatter written by other plugins is preserved. |
+| **Works before setup** | No vault, no repo, no account? Start capturing anyway. Connect either later and every card moves across. |
+| **Readable for everyone** | Green light and dark themes that follow the system, and a text-size setting that scales the whole interface. |
 
 ## How the sync works
 
@@ -43,9 +56,26 @@ foreground, so anything you (or Obsidian Sync, or Syncthing) changed in the
 meantime is picked up. Saving writes the file atomically — temp file, then
 rename — so a half-written card can never reach your vault.
 
-See [`docs/card-format.md`](docs/card-format.md) for the file format and
-[`docs/obsidian-sync.md`](docs/obsidian-sync.md) for the sync and conflict
-behaviour in detail.
+See [`docs/card-format.md`](docs/card-format.md) for the file format,
+[`docs/obsidian-sync.md`](docs/obsidian-sync.md) for the file-level behaviour,
+and [`docs/github-sync.md`](docs/github-sync.md) for the repository sync.
+
+## Sync with a GitHub repository
+
+An alternative to a vault — or an addition to one. Paste a fine-grained token
+and `owner/repo`, and Micro Card mirrors the cards folder into that repository:
+
+- **One commit per sync**, built with the Git Data API, no matter how many
+  cards changed.
+- **Three-way merge** against what the last sync left behind, so only the side
+  that actually moved is copied.
+- **Conflicts keep both versions** rather than picking a winner, and a card
+  deleted here but edited there comes back instead of vanishing.
+- **Automatic** on launch, on return to the foreground, and a few seconds after
+  a change — or entirely manual, if you prefer.
+
+The token lives in the app's private storage, separate from settings, and never
+appears in a card or an error message.
 
 ## Getting started
 
@@ -102,13 +132,15 @@ own storage and can be moved into a vault later without losing anything.
 
 ```
 src/                     React + Tailwind UI
-├── components/          Sheets, toasts, card tiles, the Markdown renderer
-├── screens/             Onboarding, Home, Library, Review, Settings
-└── lib/                 Store, backend API, types, browser demo fallback
+├── components/          Sheets, toasts, card tiles, editor, Markdown renderer
+├── screens/             Onboarding, Home, Library, Browse, Review, Stats, Settings
+└── lib/                 Store, backend API, theme, reminders, browser demo fallback
 
 src-tauri/src/           Rust core
 ├── markdown.rs          Frontmatter + body parsing and serialisation
 ├── vault.rs             Scanning, atomic writes, trash, vault detection
+├── sync.rs              Three-way merge against a `Remote` (tested with a fake)
+├── github.rs            The GitHub implementation of that `Remote`
 ├── state.rs             Settings, card cache, review journal, streaks
 ├── commands.rs          The commands the UI calls
 └── model.rs             Card, Review (SM-2), Settings
@@ -118,9 +150,15 @@ src-tauri/src/           Rust core
 
 ```sh
 npm run build                         # typecheck + production bundle
-cd src-tauri && cargo test            # Markdown round trips, vault, streaks
+cd src-tauri && cargo test            # 50 tests, no network required
 cd src-tauri && cargo clippy --all-targets -- -D warnings
 ```
+
+The sync engine is tested against an in-memory fake remote (every branch of the
+merge table, including the conflict and delete-versus-edit cases), and the
+GitHub client against a local mock HTTP server that pins the wire format — the
+tree listing, the base64 blob decoding, and the blob → tree → commit → ref
+sequence for both an existing branch and an empty repository.
 
 ## Design notes
 
@@ -132,3 +170,8 @@ one primary action per screen, 48px touch targets, bottom-anchored controls,
 swipe-to-grade, undo instead of confirmation dialogs, and no jargon anywhere in
 the interface — the words "frontmatter", "YAML" and "vault path" never appear in
 front of a first-time user.
+
+The palette is a single green system with one amber accent, defined once as CSS
+variables and inverted for dark mode. Text drawn on a brand-coloured fill uses
+its own `--brand-ink` token, because a green that is readable behind white text
+in daylight is not the same green that works at night.

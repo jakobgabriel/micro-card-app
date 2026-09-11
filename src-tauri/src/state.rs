@@ -10,7 +10,8 @@ use chrono::{Duration, Local, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
-use crate::model::{Card, DeckStat, Settings, Stats, TagStat};
+use crate::model::{Card, DayCount, DeckStat, KindStat, Settings, Stats, TagStat};
+use crate::sync::SyncState;
 use crate::vault::Vault;
 
 /// Per-day activity counters, keyed by local date (`YYYY-MM-DD`).
@@ -37,6 +38,14 @@ impl Journal {
         self.days.entry(Self::today_key()).or_default().reviewed += 1;
     }
 
+    /// Take back a review that was just recorded, so undoing a mis-tap during
+    /// review does not leave the streak counting work that was reversed.
+    pub fn undo_review(&mut self) {
+        if let Some(day) = self.days.get_mut(&Self::today_key()) {
+            day.reviewed = day.reviewed.saturating_sub(1);
+        }
+    }
+
     pub fn record_capture(&mut self) {
         self.days.entry(Self::today_key()).or_default().captured += 1;
     }
@@ -46,6 +55,49 @@ impl Journal {
             .get(&Self::today_key())
             .cloned()
             .unwrap_or_default()
+    }
+
+    /// The longest run of active days ever recorded.
+    pub fn best_streak(&self) -> u32 {
+        let mut best = 0;
+        let mut run = 0;
+        let mut previous: Option<NaiveDate> = None;
+        for (key, log) in &self.days {
+            if log.reviewed == 0 && log.captured == 0 {
+                continue;
+            }
+            let Ok(date) = key.parse::<NaiveDate>() else {
+                continue;
+            };
+            run = match previous {
+                Some(p) if date == p + Duration::days(1) => run + 1,
+                _ => 1,
+            };
+            best = best.max(run);
+            previous = Some(date);
+        }
+        best
+    }
+
+    /// Activity for the last `days` days, oldest first, including empty days
+    /// so the chart keeps a stable shape.
+    pub fn recent_activity(&self, days: i64) -> Vec<DayCount> {
+        let today = Local::now().date_naive();
+        (0..days)
+            .rev()
+            .map(|offset| {
+                let date = today - Duration::days(offset);
+                let log = self
+                    .days
+                    .get(&date.to_string())
+                    .cloned()
+                    .unwrap_or_default();
+                DayCount {
+                    date: date.to_string(),
+                    count: log.reviewed + log.captured,
+                }
+            })
+            .collect()
     }
 
     /// Consecutive days ending today (or yesterday, so the streak does not
@@ -82,6 +134,8 @@ pub struct AppState {
     pub settings: RwLock<Settings>,
     pub cards: RwLock<Vec<Card>>,
     pub journal: RwLock<Journal>,
+    /// What the last GitHub sync left behind.
+    pub sync_state: RwLock<SyncState>,
 }
 
 impl AppState {
@@ -89,12 +143,53 @@ impl AppState {
         let _ = fs::create_dir_all(&data_dir);
         let settings = read_json(&data_dir.join("settings.json")).unwrap_or_default();
         let journal = read_json(&data_dir.join("journal.json")).unwrap_or_default();
+        let sync_state = read_json(&data_dir.join("sync-state.json")).unwrap_or_default();
         AppState {
             data_dir,
             settings: RwLock::new(settings),
             cards: RwLock::new(Vec::new()),
             journal: RwLock::new(journal),
+            sync_state: RwLock::new(sync_state),
         }
+    }
+
+    /// The GitHub token, kept out of `settings.json` so that exporting or
+    /// sharing settings can never leak it.
+    pub fn github_token(&self) -> Option<String> {
+        let stored: Option<StoredToken> = read_json(&self.data_dir.join("credentials.json"));
+        stored
+            .map(|s| s.github_token)
+            .filter(|t| !t.trim().is_empty())
+    }
+
+    pub fn set_github_token(&self, token: Option<&str>) -> Result<()> {
+        let path = self.data_dir.join("credentials.json");
+        match token.map(str::trim).filter(|t| !t.is_empty()) {
+            Some(token) => {
+                write_json(
+                    &path,
+                    &StoredToken {
+                        github_token: token.to_string(),
+                    },
+                )?;
+                restrict_permissions(&path);
+                Ok(())
+            }
+            None => {
+                if path.exists() {
+                    fs::remove_file(&path)?;
+                }
+                Ok(())
+            }
+        }
+    }
+
+    pub fn save_sync_state(&self) -> Result<()> {
+        let state = self
+            .sync_state
+            .read()
+            .map_err(|_| Error::msg("Sync state is busy."))?;
+        write_json(&self.data_dir.join("sync-state.json"), &*state)
     }
 
     /// Fallback vault used before the user connects Obsidian. Cards written
@@ -153,24 +248,42 @@ impl AppState {
 
         let mut decks: BTreeMap<String, (usize, usize)> = BTreeMap::new();
         let mut tags: BTreeMap<String, usize> = BTreeMap::new();
+        let mut kinds: BTreeMap<&'static str, usize> = BTreeMap::new();
+        let mut forecast: BTreeMap<NaiveDate, u32> = BTreeMap::new();
         let mut due = 0usize;
         let mut captured_today = 0usize;
 
         for card in &cards {
-            if card.is_due(now) {
+            let is_due = card.is_due(now);
+            if is_due {
                 due += 1;
             }
             if card.created.with_timezone(&Local).date_naive() == today {
                 captured_today += 1;
             }
+            *kinds.entry(card.kind.as_str()).or_insert(0) += 1;
+
             let deck = card.deck.clone().unwrap_or_else(|| "Inbox".to_string());
             let entry = decks.entry(deck).or_insert((0, 0));
             entry.0 += 1;
-            if card.is_due(now) {
+            if is_due {
                 entry.1 += 1;
             }
             for tag in &card.tags {
                 *tags.entry(tag.clone()).or_insert(0) += 1;
+            }
+
+            // Anything already due counts against today's column.
+            if card.kind.reviewable() {
+                let day = card
+                    .review
+                    .due
+                    .with_timezone(&Local)
+                    .date_naive()
+                    .max(today);
+                if day <= today + Duration::days(13) {
+                    *forecast.entry(day).or_insert(0) += 1;
+                }
             }
         }
 
@@ -185,12 +298,37 @@ impl AppState {
             .map(|(name, count)| TagStat { name, count })
             .collect();
         tag_stats.sort_by(|a, b| b.count.cmp(&a.count).then(a.name.cmp(&b.name)));
-        tag_stats.truncate(40);
+
+        let mut kind_stats: Vec<KindStat> = kinds
+            .into_iter()
+            .map(|(kind, count)| KindStat {
+                kind: kind.to_string(),
+                count,
+            })
+            .collect();
+        kind_stats.sort_by(|a, b| b.count.cmp(&a.count));
+
+        let forecast = (0..14)
+            .map(|offset| {
+                let date = today + Duration::days(offset);
+                DayCount {
+                    count: forecast.get(&date).copied().unwrap_or(0),
+                    date: date.to_string(),
+                }
+            })
+            .collect();
 
         let journal = self.journal.read().ok();
-        let (reviewed_today, streak_days) = journal
-            .map(|j| (j.today().reviewed as usize, j.streak()))
-            .unwrap_or((0, 0));
+        let (reviewed_today, streak_days, best_streak, activity) = journal
+            .map(|j| {
+                (
+                    j.today().reviewed as usize,
+                    j.streak(),
+                    j.best_streak(),
+                    j.recent_activity(84),
+                )
+            })
+            .unwrap_or((0, 0, 0, Vec::new()));
 
         Stats {
             total: cards.len(),
@@ -198,11 +336,33 @@ impl AppState {
             captured_today,
             reviewed_today,
             streak_days,
+            best_streak,
             decks: deck_stats,
             tags: tag_stats,
+            kinds: kind_stats,
+            activity,
+            forecast,
         }
     }
 }
+
+/// Credentials live in their own file, never in the settings the user can see
+/// or export.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct StoredToken {
+    github_token: String,
+}
+
+/// Best-effort `chmod 600`. On Android every app already has its own uid, so
+/// this only matters on a shared desktop machine.
+#[cfg(unix)]
+fn restrict_permissions(path: &PathBuf) {
+    use std::os::unix::fs::PermissionsExt;
+    let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
+}
+
+#[cfg(not(unix))]
+fn restrict_permissions(_path: &PathBuf) {}
 
 fn read_json<T: serde::de::DeserializeOwned>(path: &PathBuf) -> Option<T> {
     let content = fs::read_to_string(path).ok()?;

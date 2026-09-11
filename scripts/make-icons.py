@@ -12,9 +12,9 @@ import zlib
 OUT = os.path.join(os.path.dirname(__file__), "..", "src-tauri", "icons")
 SS = 4  # supersampling factor
 
-BG_TOP = (124, 58, 237)     # violet
-BG_BOTTOM = (67, 56, 202)   # indigo
-ACCENT = (251, 146, 60)     # amber
+BG_TOP = (26, 160, 106)     # emerald
+BG_BOTTOM = (13, 104, 84)   # deep forest green
+ACCENT = (245, 158, 11)     # amber
 WHITE = (255, 255, 255)
 
 

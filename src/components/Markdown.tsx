@@ -10,7 +10,11 @@ import type { ReactNode } from "react";
 
 import { cn } from "@/lib/utils";
 
-function inline(text: string, keyPrefix: string): ReactNode[] {
+function inline(
+  text: string,
+  keyPrefix: string,
+  onLink?: (target: string) => void,
+): ReactNode[] {
   const nodes: ReactNode[] = [];
   // One pass over the interesting inline constructs, in priority order.
   const pattern =
@@ -33,11 +37,23 @@ function inline(text: string, keyPrefix: string): ReactNode[] {
     } else if (token.startsWith("**")) {
       nodes.push(<strong key={key}>{token.slice(2, -2)}</strong>);
     } else if (token.startsWith("[[")) {
-      const target = token.slice(2, -2).split("|")[0];
+      const inner = token.slice(2, -2);
+      const target = inner.split("|")[0].trim();
+      const label = inner.split("|")[1]?.trim() ?? target;
       nodes.push(
-        <span key={key} className="font-medium text-brand">
-          {target}
-        </span>,
+        onLink ? (
+          <button
+            key={key}
+            onClick={() => onLink(target)}
+            className="font-medium text-brand underline decoration-brand/40 underline-offset-2"
+          >
+            {label}
+          </button>
+        ) : (
+          <span key={key} className="font-medium text-brand">
+            {label}
+          </span>
+        ),
       );
     } else if (token.trimStart().startsWith("#")) {
       const lead = token.startsWith("#") ? "" : token[0];
@@ -56,7 +72,16 @@ function inline(text: string, keyPrefix: string): ReactNode[] {
   return nodes;
 }
 
-export function Markdown({ text, className }: { text: string; className?: string }) {
+export function Markdown({
+  text,
+  className,
+  onLink,
+}: {
+  text: string;
+  className?: string;
+  /** Called when a `[[wikilink]]` is tapped. */
+  onLink?: (target: string) => void;
+}) {
   const lines = text.split("\n");
   const blocks: ReactNode[] = [];
   let paragraph: string[] = [];
@@ -68,7 +93,7 @@ export function Markdown({ text, className }: { text: string; className?: string
     const key = `p-${blocks.length}`;
     blocks.push(
       <p key={key} className="leading-relaxed">
-        {inline(paragraph.join(" "), key)}
+        {inline(paragraph.join(" "), key, onLink)}
       </p>,
     );
     paragraph = [];
@@ -82,7 +107,7 @@ export function Markdown({ text, className }: { text: string; className?: string
         {list.map((item, index) => (
           <li key={index} className="flex gap-2 leading-relaxed">
             <span className="mt-[.55em] h-1.5 w-1.5 shrink-0 rounded-full bg-brand" />
-            <span>{inline(item, `${key}-${index}`)}</span>
+            <span>{inline(item, `${key}-${index}`, onLink)}</span>
           </li>
         ))}
       </ul>,
@@ -137,7 +162,7 @@ export function Markdown({ text, className }: { text: string; className?: string
             level <= 2 ? "text-lg" : "text-[15px]",
           )}
         >
-          {inline(heading[2], key)}
+          {inline(heading[2], key, onLink)}
         </p>,
       );
       continue;
@@ -158,7 +183,7 @@ export function Markdown({ text, className }: { text: string; className?: string
           key={key}
           className="border-l-[3px] border-brand/50 pl-3 italic text-muted"
         >
-          {inline(line.replace(/^>\s?/, ""), key)}
+          {inline(line.replace(/^>\s?/, ""), key, onLink)}
         </blockquote>,
       );
       continue;

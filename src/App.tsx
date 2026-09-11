@@ -1,36 +1,45 @@
-import { useEffect, useState } from "react";
-import { Home as HomeIcon, Layers, Plus, Repeat } from "lucide-react";
+import { useCallback, useEffect, useState } from "react";
+import { Compass, Home as HomeIcon, Layers, Plus, Repeat } from "lucide-react";
 
 import { CaptureSheet } from "@/components/CaptureSheet";
 import { CardDetailSheet } from "@/components/CardDetailSheet";
 import { Spinner } from "@/components/ui";
+import { Browse } from "@/screens/Browse";
 import { Home } from "@/screens/Home";
 import { LibraryScreen } from "@/screens/LibraryScreen";
 import { Onboarding } from "@/screens/Onboarding";
 import { Review } from "@/screens/Review";
 import { SettingsScreen } from "@/screens/SettingsScreen";
+import { Stats } from "@/screens/Stats";
 import { useStore } from "@/lib/store";
-import type { Card } from "@/lib/types";
+import { applyTheme, watchSystemTheme } from "@/lib/theme";
+import type { Card, SessionRequest } from "@/lib/types";
 import { cn, haptic, isDue } from "@/lib/utils";
 
-type Tab = "home" | "library" | "review";
+type Tab = "home" | "library" | "browse" | "review";
+/** Screens that cover the tabs rather than living inside them. */
+type Overlay = "settings" | "stats" | null;
 
 export function App() {
   const { library, loading, error, reload } = useStore();
   const [tab, setTab] = useState<Tab>("home");
-  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [overlay, setOverlay] = useState<Overlay>(null);
   const [capturing, setCapturing] = useState(false);
   const [editing, setEditing] = useState<Card | null>(null);
   const [detail, setDetail] = useState<Card | null>(null);
+  const [libraryQuery, setLibraryQuery] = useState<string | undefined>();
+  const [sessionFilter, setSessionFilter] = useState<SessionRequest | undefined>();
+  const [selecting, setSelecting] = useState(false);
 
-  // Follow the theme choice, and keep the Android status bar colour in step.
+  const settings = library?.settings;
+
+  // Apply the theme, and keep following the system setting while open.
   useEffect(() => {
-    const dark = library?.settings.dark_mode ?? true;
-    document.documentElement.classList.toggle("dark", dark);
-    document
-      .querySelector('meta[name="theme-color"]')
-      ?.setAttribute("content", dark ? "#0d0b14" : "#f7f5fc");
-  }, [library?.settings.dark_mode]);
+    if (!settings) return;
+    applyTheme(settings);
+    if (settings.theme !== "system") return;
+    return watchSystemTheme(() => applyTheme(settings));
+  }, [settings]);
 
   // Keep the open detail card in step with the library after an edit.
   useEffect(() => {
@@ -38,6 +47,16 @@ export function App() {
     const fresh = library.cards.find((c) => c.id === detail.id) ?? null;
     if (fresh !== detail) setDetail(fresh);
   }, [library, detail]);
+
+  const openLibraryWith = useCallback((query: string) => {
+    setLibraryQuery(query);
+    setTab("library");
+  }, []);
+
+  const startSession = useCallback((filter?: SessionRequest) => {
+    setSessionFilter(filter);
+    setTab("review");
+  }, []);
 
   if (loading) {
     return (
@@ -55,7 +74,7 @@ export function App() {
           <p className="mt-2 text-sm text-muted">{error}</p>
           <button
             onClick={() => void reload()}
-            className="mt-4 h-12 rounded-2xl bg-brand px-6 font-semibold text-white"
+            className="mt-4 h-12 rounded-2xl bg-brand px-6 font-semibold text-brand-ink"
           >
             Try again
           </button>
@@ -70,10 +89,14 @@ export function App() {
 
   const dueCount = (library?.cards ?? []).filter(isDue).length;
 
-  if (settingsOpen) {
+  if (overlay) {
     return (
       <main className="h-full overflow-y-auto">
-        <SettingsScreen onBack={() => setSettingsOpen(false)} />
+        {overlay === "settings" ? (
+          <SettingsScreen onBack={() => setOverlay(null)} />
+        ) : (
+          <Stats onBack={() => setOverlay(null)} />
+        )}
       </main>
     );
   }
@@ -85,29 +108,62 @@ export function App() {
           <Home
             onCapture={() => setCapturing(true)}
             onOpenCard={setDetail}
-            onReview={() => setTab("review")}
-            onSettings={() => setSettingsOpen(true)}
+            onReview={() => startSession(undefined)}
+            onSettings={() => setOverlay("settings")}
+            onStats={() => setOverlay("stats")}
           />
         )}
-        {tab === "library" && <LibraryScreen onOpenCard={setDetail} />}
-        {tab === "review" && <Review onExit={() => setTab("home")} />}
+        {tab === "library" && (
+          <LibraryScreen
+            onOpenCard={setDetail}
+            initialQuery={libraryQuery}
+            onSelectionChange={setSelecting}
+          />
+        )}
+        {tab === "browse" && (
+          <Browse
+            onOpenFilter={openLibraryWith}
+            onStudy={(filter) => startSession(filter)}
+          />
+        )}
+        {tab === "review" && (
+          <Review
+            filter={sessionFilter}
+            onExit={() => {
+              setSessionFilter(undefined);
+              setTab("home");
+            }}
+          />
+        )}
       </main>
 
       {tab !== "review" && (
         <>
           {/* Floating capture button: reachable from every list screen and
-              never on top of a tab label. */}
+              never on top of a tab label. It steps aside while cards are
+              being selected, where the bulk actions take that corner. */}
+          {!selecting && (
           <button
             aria-label="Capture a card"
             onClick={() => {
               haptic(14);
               setCapturing(true);
             }}
-            className="fixed bottom-[calc(5.5rem+env(safe-area-inset-bottom))] right-4 z-30 grid h-14 w-14 place-items-center rounded-2xl bg-brand text-white shadow-lift transition active:scale-90"
+            className="fixed bottom-[calc(5.5rem+env(safe-area-inset-bottom))] right-4 z-30 grid h-14 w-14 place-items-center rounded-2xl bg-brand text-brand-ink shadow-lift transition active:scale-90"
           >
             <Plus className="h-7 w-7" />
           </button>
-          <TabBar tab={tab} dueCount={dueCount} onTab={setTab} />
+          )}
+          <TabBar
+            tab={tab}
+            dueCount={dueCount}
+            onTab={(next) => {
+              if (next !== "library") setSelecting(false);
+              if (next === "library") setLibraryQuery(undefined);
+              if (next === "review") setSessionFilter(undefined);
+              setTab(next);
+            }}
+          />
         </>
       )}
 
@@ -123,6 +179,7 @@ export function App() {
       <CardDetailSheet
         card={editing ? null : detail}
         onClose={() => setDetail(null)}
+        onOpen={setDetail}
         onEdit={(card) => {
           setDetail(null);
           setEditing(card);
@@ -144,12 +201,13 @@ function TabBar({
   const items: { value: Tab; label: string; icon: JSX.Element; badge?: number }[] = [
     { value: "home", label: "Home", icon: <HomeIcon className="h-5 w-5" /> },
     { value: "library", label: "Cards", icon: <Layers className="h-5 w-5" /> },
+    { value: "browse", label: "Browse", icon: <Compass className="h-5 w-5" /> },
     { value: "review", label: "Review", icon: <Repeat className="h-5 w-5" />, badge: dueCount },
   ];
 
   return (
     <nav className="shrink-0 border-t border-line bg-surface/95 pb-[env(safe-area-inset-bottom)] backdrop-blur">
-      <div className="grid grid-cols-3 items-center">
+      <div className="grid grid-cols-4 items-center">
         {items.map((item) => {
           const active = tab === item.value;
           return (
@@ -168,7 +226,7 @@ function TabBar({
               <span className="relative">
                 {item.icon}
                 {item.badge ? (
-                  <span className="absolute -right-2.5 -top-1.5 grid h-4 min-w-4 place-items-center rounded-full bg-accent px-1 text-[10px] font-bold text-white">
+                  <span className="absolute -right-2.5 -top-1.5 grid h-4 min-w-4 place-items-center rounded-full bg-accent px-1 text-[10px] font-bold text-accent-ink">
                     {item.badge > 99 ? "99+" : item.badge}
                   </span>
                 ) : null}

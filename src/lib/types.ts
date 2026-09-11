@@ -39,13 +39,39 @@ export interface CardDraft {
   starred?: boolean;
 }
 
+export type Theme = "system" | "light" | "dark";
+
+export interface RepoConfig {
+  owner: string;
+  repo: string;
+  branch: string;
+}
+
 export interface Settings {
   vault_path: string | null;
   folder: string;
   default_tag: string;
   onboarded: boolean;
-  dark_mode: boolean;
+  theme: Theme;
+  text_scale: number;
   daily_goal: number;
+  session_size: number;
+  reminder_hour: number | null;
+  github: RepoConfig | null;
+  github_auto_sync: boolean;
+}
+
+/** Patch shape accepted by `update_settings`. */
+export interface SettingsPatch {
+  folder?: string;
+  default_tag?: string;
+  onboarded?: boolean;
+  theme?: Theme;
+  text_scale?: number;
+  daily_goal?: number;
+  session_size?: number;
+  reminder_hour?: number | null;
+  github_auto_sync?: boolean;
 }
 
 export interface DeckStat {
@@ -59,14 +85,86 @@ export interface TagStat {
   count: number;
 }
 
+export interface KindStat {
+  kind: CardKind;
+  count: number;
+}
+
+export interface DayCount {
+  date: string;
+  count: number;
+}
+
 export interface Stats {
   total: number;
   due: number;
   captured_today: number;
   reviewed_today: number;
   streak_days: number;
+  best_streak: number;
   decks: DeckStat[];
   tags: TagStat[];
+  kinds: KindStat[];
+  activity: DayCount[];
+  forecast: DayCount[];
+}
+
+export interface GithubStatus {
+  connected: boolean;
+  repo: string | null;
+  branch: string | null;
+  auto_sync: boolean;
+  last_synced: string | null;
+  last_commit: string | null;
+  tracked_files: number;
+}
+
+export interface RepoInfo {
+  full_name: string;
+  private: boolean;
+  default_branch: string;
+  can_write: boolean;
+  existing_cards: number;
+}
+
+export interface SyncReport {
+  pulled: number;
+  pushed: number;
+  deleted_local: number;
+  deleted_remote: number;
+  conflicts: string[];
+  commit: string | null;
+  summary: string;
+}
+
+export interface Similar {
+  id: string;
+  title: string;
+  score: number;
+}
+
+export interface BulkResult {
+  changed: number;
+}
+
+export interface ImportResult {
+  created: number;
+  skipped: number;
+}
+
+export interface SessionRequest {
+  deck?: string | null;
+  tag?: string | null;
+  cram?: boolean;
+  limit?: number;
+}
+
+export interface BulkEdit {
+  ids: string[];
+  add_tags?: string[];
+  remove_tags?: string[];
+  deck?: string;
+  starred?: boolean;
 }
 
 export interface Library {

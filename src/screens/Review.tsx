@@ -4,20 +4,27 @@
  * come back, so the choice is never a guess.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Check, PartyPopper, RotateCcw, Sparkles, X } from "lucide-react";
+import { Check, PartyPopper, RotateCcw, Sparkles, Undo2, X } from "lucide-react";
 
 import { Markdown } from "@/components/Markdown";
 import { Button, EmptyState, IconButton } from "@/components/ui";
 import { useToast } from "@/components/Toast";
-import { errorMessage } from "@/lib/api";
+import { api, errorMessage } from "@/lib/api";
 import { useStore } from "@/lib/store";
-import type { Card, Grade } from "@/lib/types";
-import { cn, haptic, isDue, untilDue } from "@/lib/utils";
+import type { Card, Grade, Review as ReviewState, SessionRequest } from "@/lib/types";
+import { cn, haptic, untilDue } from "@/lib/utils";
 
 const SWIPE_THRESHOLD = 90;
 
-export function Review({ onExit }: { onExit: () => void }) {
-  const { library, gradeCard } = useStore();
+export function Review({
+  onExit,
+  filter,
+}: {
+  onExit: () => void;
+  /** Set when the session was started from a deck or tag in Browse. */
+  filter?: SessionRequest;
+}) {
+  const { library, gradeCard, restoreReview } = useStore();
   const toast = useToast();
 
   const [queue, setQueue] = useState<Card[] | null>(null);
@@ -27,17 +34,26 @@ export function Review({ onExit }: { onExit: () => void }) {
   const [exiting, setExiting] = useState<Grade | null>(null);
   const [done, setDone] = useState(0);
   const startX = useRef<number | null>(null);
+  /** The card and schedule from the last grade, so one tap can take it back. */
+  const lastGrade = useRef<{ id: string; review: ReviewState } | null>(null);
 
-  // Snapshot the due cards once so the queue does not shift under the user
-  // while they are working through it.
+  // Build the queue once, on the backend, so the session does not shift under
+  // the user while they work through it.
   useEffect(() => {
     if (queue !== null || !library) return;
-    const due = library.cards
-      .filter(isDue)
-      .sort((a, b) => b.review.lapses - a.review.lapses)
-      .slice(0, 50);
-    setQueue(due);
-  }, [library, queue]);
+    let cancelled = false;
+    api
+      .reviewSession(filter ?? {})
+      .then((cards) => {
+        if (!cancelled) setQueue(cards);
+      })
+      .catch(() => {
+        if (!cancelled) setQueue([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [library, queue, filter]);
 
   const current = queue?.[index] ?? null;
 
@@ -46,6 +62,7 @@ export function Review({ onExit }: { onExit: () => void }) {
       if (!current) return;
       haptic(grade === "again" ? [8, 30, 8] : 14);
       setExiting(grade);
+      lastGrade.current = { id: current.id, review: current.review };
       try {
         await gradeCard(current.id, grade);
         setDone((n) => n + 1);
@@ -78,6 +95,21 @@ export function Review({ onExit }: { onExit: () => void }) {
     return () => window.removeEventListener("keydown", onKey);
   }, [current, flipped, answer]);
 
+  const undoLast = async () => {
+    const last = lastGrade.current;
+    if (!last) return;
+    lastGrade.current = null;
+    try {
+      await restoreReview(last.id, last.review);
+      setDone((n) => Math.max(0, n - 1));
+      setIndex((i) => Math.max(0, i - 1));
+      setFlipped(false);
+      toast.success("Put that card back");
+    } catch (err) {
+      toast.error(errorMessage(err));
+    }
+  };
+
   if (queue === null) return null;
 
   if (queue.length === 0 || !current) {
@@ -92,7 +124,9 @@ export function Review({ onExit }: { onExit: () => void }) {
             description={
               finished
                 ? `You reviewed ${done} card${done === 1 ? "" : "s"}. They will come back exactly when you are about to forget them.`
-                : "Cards with a question and an answer show up here when it is time to see them again. Capture a Q & A card to get started."
+                : filter?.deck || filter?.tag
+                  ? "Nothing in this group is due right now. Everything here is fresh in your memory."
+                  : "Cards with a question and an answer show up here when it is time to see them again. Capture a Q & A card to get started."
             }
             action={
               <Button className="mt-2" onClick={onExit}>
@@ -110,7 +144,12 @@ export function Review({ onExit }: { onExit: () => void }) {
 
   return (
     <div className="flex h-full flex-col px-4 pb-6 pt-4">
-      <Header onExit={onExit} done={done} total={queue.length} />
+      <Header
+        onExit={onExit}
+        done={done}
+        total={queue.length}
+        onUndo={index > 0 ? () => void undoLast() : undefined}
+      />
 
       <div className="relative flex flex-1 items-center justify-center py-4">
         {/* The next card, peeking out to show progress has depth. */}
@@ -265,10 +304,12 @@ function Header({
   onExit,
   done,
   total,
+  onUndo,
 }: {
   onExit: () => void;
   done: number;
   total: number;
+  onUndo?: () => void;
 }) {
   const progress = total > 0 ? Math.min(1, done / total) : 0;
   return (
@@ -282,9 +323,14 @@ function Header({
           style={{ width: `${progress * 100}%` }}
         />
       </div>
-      <span className="w-14 text-right text-sm font-bold tabular-nums text-muted">
+      <span className="text-sm font-bold tabular-nums text-muted">
         {done}/{total}
       </span>
+      {onUndo && (
+        <IconButton label="Undo last answer" onClick={onUndo}>
+          <Undo2 className="h-5 w-5" />
+        </IconButton>
+      )}
     </div>
   );
 }

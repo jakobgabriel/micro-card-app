@@ -2,31 +2,53 @@
 import { useEffect, useState } from "react";
 import {
   ArrowLeft,
+  Bell,
+  BellOff,
+  CloudOff,
+  Download,
   FolderOpen,
   FolderSync,
+  Github,
   HardDrive,
   Info,
   Layers,
+  Monitor,
   Moon,
   RefreshCcw,
   Sun,
   Target,
+  Type,
+  Upload,
 } from "lucide-react";
 
-import { Button, IconButton, Spinner } from "@/components/ui";
+import { GithubSetup } from "@/components/GithubSetup";
+import { Sheet } from "@/components/Sheet";
+import { Button, Chip, IconButton, Spinner } from "@/components/ui";
 import { useToast } from "@/components/Toast";
 import { api, errorMessage } from "@/lib/api";
 import { useStore } from "@/lib/store";
-import type { VaultCandidate } from "@/lib/types";
+import { cancelReminder, scheduleReminder } from "@/lib/reminders";
+import type { Theme, VaultCandidate } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 export function SettingsScreen({ onBack }: { onBack: () => void }) {
-  const { library, updateSettings, setVault, moveLocalCardsToVault, reload } = useStore();
+  const {
+    library,
+    github,
+    syncing,
+    updateSettings,
+    setVault,
+    moveLocalCardsToVault,
+    reload,
+    sync,
+  } = useStore();
   const toast = useToast();
   const [vaults, setVaults] = useState<VaultCandidate[] | null>(null);
   const [scanning, setScanning] = useState(false);
   const [folder, setFolder] = useState(library?.settings.folder ?? "Cards");
   const [busy, setBusy] = useState(false);
+  const [githubOpen, setGithubOpen] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
 
   useEffect(() => {
     if (library) setFolder(library.settings.folder);
@@ -74,6 +96,66 @@ export function SettingsScreen({ onBack }: { onBack: () => void }) {
     }
   };
 
+  const runSync = async () => {
+    try {
+      const report = await sync();
+      if (report) toast.success(report.summary);
+      if (report && report.conflicts.length > 0) {
+        toast.show(
+          `${report.conflicts.length} card${report.conflicts.length === 1 ? " was" : "s were"} changed in both places — both versions were kept.`,
+          { tone: "info" },
+        );
+      }
+    } catch (err) {
+      toast.error(errorMessage(err));
+    }
+  };
+
+  const disconnectGithub = async () => {
+    setBusy(true);
+    try {
+      await api.githubDisconnect();
+      await reload();
+      toast.success("Repository disconnected — your cards stay put");
+    } catch (err) {
+      toast.error(errorMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const exportCards = async () => {
+    try {
+      const markdown = await api.exportMarkdown();
+      const { save } = await import("@tauri-apps/plugin-dialog");
+      const path = await save({
+        defaultPath: "micro-card-export.md",
+        filters: [{ name: "Markdown", extensions: ["md"] }],
+      });
+      if (!path) return;
+      await api.writeTextFile(path, markdown);
+      toast.success("Exported");
+    } catch (err) {
+      toast.error(errorMessage(err));
+    }
+  };
+
+  const setReminder = async (hour: number | null) => {
+    await updateSettings({ reminder_hour: hour });
+    if (hour === null) {
+      await cancelReminder();
+      toast.success("Reminder off");
+      return;
+    }
+    const ok = await scheduleReminder(hour);
+    toast.show(
+      ok
+        ? `Reminder set for ${String(hour).padStart(2, "0")}:00`
+        : "Allow notifications to get a daily reminder.",
+      { tone: ok ? "success" : "error" },
+    );
+  };
+
   return (
     <div className="px-4 pb-28 pt-4">
       <header className="flex items-center gap-2">
@@ -96,7 +178,7 @@ export function SettingsScreen({ onBack }: { onBack: () => void }) {
             </div>
             <div className="min-w-0 flex-1">
               <p className="font-bold">
-                {localMode ? "This device only" : "Obsidian vault connected"}
+                {localMode ? "This device" : "Obsidian vault connected"}
               </p>
               <p className="truncate font-mono text-xs text-muted" data-selectable>
                 {vaultRoot}
@@ -106,8 +188,9 @@ export function SettingsScreen({ onBack }: { onBack: () => void }) {
 
           {localMode && (
             <p className="mt-3 text-sm leading-relaxed text-muted">
-              Your cards are safe, but only on this phone. Connect a vault and they
-              are copied across — nothing is deleted.
+              Cards are Markdown files in the app's own folder. Connect an
+              Obsidian vault or a GitHub repository — or both — and they travel
+              with you.
             </p>
           )}
 
@@ -150,8 +233,8 @@ export function SettingsScreen({ onBack }: { onBack: () => void }) {
         </div>
 
         <Field
-          label="Folder inside the vault"
-          hint="New cards are written here. Existing cards stay where they are."
+          label="Folder for new cards"
+          hint="Inside the vault, and inside the repository. Existing cards stay where they are."
         >
           <div className="flex gap-2">
             <input
@@ -169,18 +252,78 @@ export function SettingsScreen({ onBack }: { onBack: () => void }) {
             </Button>
           </div>
         </Field>
+      </Section>
 
-        <Field
-          label="Tag added to every card"
-          hint="Makes cards easy to find in Obsidian search. Leave empty for none."
-        >
-          <input
-            defaultValue={settings.default_tag}
-            onBlur={(e) => void updateSettings({ default_tag: e.target.value })}
-            placeholder="card"
-            className="h-12 w-full rounded-2xl border border-line bg-raised px-4 outline-none focus:border-brand"
-          />
-        </Field>
+      <Section title="GitHub sync">
+        <div className="card-surface p-4">
+          <div className="flex items-center gap-3">
+            <div
+              className={cn(
+                "grid h-11 w-11 shrink-0 place-items-center rounded-2xl",
+                github?.connected ? "bg-brand-soft text-brand" : "bg-raised text-muted",
+              )}
+            >
+              <Github className="h-5 w-5" />
+            </div>
+            <div className="min-w-0 flex-1">
+              <p className="font-bold">
+                {github?.connected ? github.repo : "Not connected"}
+              </p>
+              <p className="truncate text-xs text-muted">
+                {github?.connected
+                  ? `${github.branch} · ${github.tracked_files} card${github.tracked_files === 1 ? "" : "s"} tracked${
+                      github.last_synced ? ` · synced ${github.last_synced}` : ""
+                    }`
+                  : "Keep your cards in a Git repository, with full history."}
+              </p>
+            </div>
+          </div>
+
+          {github?.connected ? (
+            <>
+              <div className="mt-3 grid grid-cols-2 gap-2">
+                <Button
+                  size="sm"
+                  loading={syncing}
+                  onClick={() => void runSync()}
+                  icon={<RefreshCcw className="h-4 w-4" />}
+                >
+                  Sync now
+                </Button>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  disabled={busy}
+                  onClick={() => void disconnectGithub()}
+                  icon={<CloudOff className="h-4 w-4" />}
+                >
+                  Disconnect
+                </Button>
+              </div>
+              <Row
+                className="mt-3"
+                icon={<RefreshCcw className="h-5 w-5" />}
+                title="Sync automatically"
+                subtitle="On launch, on return, and after each change"
+              >
+                <Toggle
+                  checked={settings.github_auto_sync}
+                  onChange={(checked) => void updateSettings({ github_auto_sync: checked })}
+                />
+              </Row>
+            </>
+          ) : (
+            <Button
+              className="mt-3"
+              block
+              size="sm"
+              onClick={() => setGithubOpen(true)}
+              icon={<Github className="h-4 w-4" />}
+            >
+              Connect a repository
+            </Button>
+          )}
+        </div>
       </Section>
 
       <Section title="Reviews">
@@ -196,28 +339,98 @@ export function SettingsScreen({ onBack }: { onBack: () => void }) {
             step={5}
             defaultValue={settings.daily_goal}
             onChange={(e) => void updateSettings({ daily_goal: Number(e.target.value) })}
-            className="w-28 accent-[hsl(var(--brand))]"
+            className="w-24 accent-[hsl(var(--brand))]"
           />
+        </Row>
+        <Row
+          icon={<Layers className="h-5 w-5" />}
+          title="Session size"
+          subtitle={`${settings.session_size} cards per session`}
+        >
+          <input
+            type="range"
+            min={5}
+            max={100}
+            step={5}
+            defaultValue={settings.session_size}
+            onChange={(e) => void updateSettings({ session_size: Number(e.target.value) })}
+            className="w-24 accent-[hsl(var(--brand))]"
+          />
+        </Row>
+        <Row
+          icon={settings.reminder_hour === null ? <BellOff className="h-5 w-5" /> : <Bell className="h-5 w-5" />}
+          title="Daily reminder"
+          subtitle={
+            settings.reminder_hour === null
+              ? "Off"
+              : `Every day at ${String(settings.reminder_hour).padStart(2, "0")}:00`
+          }
+        >
+          <select
+            value={settings.reminder_hour ?? ""}
+            onChange={(e) =>
+              void setReminder(e.target.value === "" ? null : Number(e.target.value))
+            }
+            className="h-10 rounded-xl border border-line bg-raised px-2 text-sm outline-none"
+          >
+            <option value="">Off</option>
+            {Array.from({ length: 24 }, (_, hour) => (
+              <option key={hour} value={hour}>
+                {String(hour).padStart(2, "0")}:00
+              </option>
+            ))}
+          </select>
         </Row>
       </Section>
 
       <Section title="Appearance">
+        <div className="card-surface p-4">
+          <p className="pb-2 text-sm font-semibold">Theme</p>
+          <div className="grid grid-cols-3 gap-2">
+            {(
+              [
+                { value: "system", label: "System", icon: <Monitor className="h-4 w-4" /> },
+                { value: "light", label: "Light", icon: <Sun className="h-4 w-4" /> },
+                { value: "dark", label: "Dark", icon: <Moon className="h-4 w-4" /> },
+              ] as { value: Theme; label: string; icon: JSX.Element }[]
+            ).map((option) => (
+              <button
+                key={option.value}
+                onClick={() => void updateSettings({ theme: option.value })}
+                className={cn(
+                  "flex h-16 flex-col items-center justify-center gap-1 rounded-2xl border-2 text-xs font-bold transition active:scale-95",
+                  settings.theme === option.value
+                    ? "border-brand bg-brand-soft text-brand"
+                    : "border-line text-muted",
+                )}
+              >
+                {option.icon}
+                {option.label}
+              </button>
+            ))}
+          </div>
+        </div>
         <Row
-          icon={settings.dark_mode ? <Moon className="h-5 w-5" /> : <Sun className="h-5 w-5" />}
-          title="Dark mode"
-          subtitle={settings.dark_mode ? "On" : "Off"}
+          icon={<Type className="h-5 w-5" />}
+          title="Text size"
+          subtitle={`${Math.round(settings.text_scale * 100)}%`}
         >
-          <Toggle
-            checked={settings.dark_mode}
-            onChange={(checked) => void updateSettings({ dark_mode: checked })}
+          <input
+            type="range"
+            min={85}
+            max={140}
+            step={5}
+            defaultValue={Math.round(settings.text_scale * 100)}
+            onChange={(e) => void updateSettings({ text_scale: Number(e.target.value) / 100 })}
+            className="w-24 accent-[hsl(var(--brand))]"
           />
         </Row>
       </Section>
 
-      <Section title="Sync">
+      <Section title="Your cards">
         <Row
           icon={<RefreshCcw className="h-5 w-5" />}
-          title="Reload from vault"
+          title="Reload from disk"
           subtitle="Picks up edits you made in Obsidian"
         >
           <Button
@@ -228,16 +441,149 @@ export function SettingsScreen({ onBack }: { onBack: () => void }) {
             Reload
           </Button>
         </Row>
-        <div className="mt-3 flex gap-3 rounded-2xl bg-raised p-4 text-sm leading-relaxed text-muted">
+        <Row
+          icon={<Download className="h-5 w-5" />}
+          title="Export"
+          subtitle="One Markdown file with every card"
+        >
+          <Button size="sm" variant="secondary" onClick={() => void exportCards()}>
+            Export
+          </Button>
+        </Row>
+        <Row
+          icon={<Upload className="h-5 w-5" />}
+          title="Import"
+          subtitle="Paste a list, or a file from another app"
+        >
+          <Button size="sm" variant="secondary" onClick={() => setImportOpen(true)}>
+            Import
+          </Button>
+        </Row>
+        <Field label="Tag added to every card" hint="Leave empty for none.">
+          <input
+            defaultValue={settings.default_tag}
+            onBlur={(e) => void updateSettings({ default_tag: e.target.value })}
+            placeholder="card"
+            className="h-12 w-full rounded-2xl border border-line bg-raised px-4 outline-none focus:border-brand"
+          />
+        </Field>
+        <div className="flex gap-3 rounded-2xl bg-raised p-4 text-sm leading-relaxed text-muted">
           <Info className="mt-0.5 h-4 w-4 shrink-0" />
           <p>
             Micro Card reads and writes the files directly — there is no separate
-            copy and no account. Use Obsidian Sync, Syncthing or any folder sync to
-            move the vault between devices.
+            copy and no account. Use Obsidian Sync, Syncthing, a GitHub
+            repository or any folder sync to move cards between devices.
           </p>
         </div>
       </Section>
+
+      <GithubSetup open={githubOpen} onClose={() => setGithubOpen(false)} />
+      <ImportSheet open={importOpen} onClose={() => setImportOpen(false)} />
     </div>
+  );
+}
+
+/** Paste-or-pick import, covering Anki exports and a list typed by hand. */
+function ImportSheet({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const { reload, library } = useStore();
+  const toast = useToast();
+  const [text, setText] = useState("");
+  const [deck, setDeck] = useState("");
+  const [split, setSplit] = useState<"lines" | "blocks">("lines");
+  const [busy, setBusy] = useState(false);
+
+  const pickFile = async () => {
+    try {
+      const { open: openDialog } = await import("@tauri-apps/plugin-dialog");
+      const path = await openDialog({
+        multiple: false,
+        filters: [{ name: "Text", extensions: ["md", "txt", "csv", "tsv"] }],
+      });
+      if (typeof path !== "string") return;
+      setText(await api.readTextFile(path));
+    } catch (err) {
+      toast.error(errorMessage(err));
+    }
+  };
+
+  const run = async () => {
+    setBusy(true);
+    try {
+      const result = await api.importText({
+        text,
+        split,
+        deck: deck.trim() || undefined,
+      });
+      await reload();
+      toast.success(
+        `Added ${result.created} card${result.created === 1 ? "" : "s"}${
+          result.skipped ? `, skipped ${result.skipped}` : ""
+        }`,
+      );
+      setText("");
+      onClose();
+    } catch (err) {
+      toast.error(errorMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Sheet
+      open={open}
+      onClose={onClose}
+      size="full"
+      title="Import cards"
+      footer={
+        <Button size="lg" block loading={busy} disabled={!text.trim()} onClick={() => void run()}>
+          Create cards
+        </Button>
+      }
+    >
+      <p className="pb-3 text-sm leading-relaxed text-muted">
+        Paste anything. A line with a tab, <span className="font-mono">::</span>{" "}
+        or <span className="font-mono">|</span> becomes a question and an answer —
+        which is what Anki and Quizlet exports look like.
+      </p>
+
+      <div className="flex gap-2 pb-3">
+        <Chip active={split === "lines"} onClick={() => setSplit("lines")}>
+          One card per line
+        </Chip>
+        <Chip active={split === "blocks"} onClick={() => setSplit("blocks")}>
+          Split on blank lines
+        </Chip>
+      </div>
+
+      <textarea
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        rows={9}
+        placeholder={"Bonjour\tHello\nMerci :: Thank you"}
+        className="w-full resize-none rounded-2xl border border-line bg-raised p-4 font-mono text-sm outline-none focus:border-brand"
+      />
+
+      <Button variant="secondary" className="mt-2" block onClick={() => void pickFile()}>
+        Choose a file instead
+      </Button>
+
+      <Field label="Put them in a deck" hint="Optional.">
+        <input
+          value={deck}
+          onChange={(e) => setDeck(e.target.value)}
+          placeholder="French"
+          className="h-12 w-full rounded-2xl border border-line bg-raised px-4 outline-none focus:border-brand"
+        />
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {(library?.stats.decks ?? []).slice(0, 6).map((d) => (
+            <Chip key={d.name} onClick={() => setDeck(d.name)}>
+              {d.name}
+            </Chip>
+          ))}
+        </div>
+      </Field>
+    </Sheet>
   );
 }
 
@@ -262,7 +608,7 @@ function Field({
   children: React.ReactNode;
 }) {
   return (
-    <div>
+    <div className="pt-1">
       <label className="px-1 text-sm font-semibold">{label}</label>
       {hint && <p className="px-1 pb-1.5 pt-0.5 text-xs text-muted">{hint}</p>}
       {children}
@@ -275,14 +621,16 @@ function Row({
   title,
   subtitle,
   children,
+  className,
 }: {
   icon: React.ReactNode;
   title: string;
   subtitle?: string;
   children?: React.ReactNode;
+  className?: string;
 }) {
   return (
-    <div className="card-surface flex items-center gap-3 p-4">
+    <div className={cn("card-surface flex items-center gap-3 p-4", className)}>
       <div className="grid h-10 w-10 shrink-0 place-items-center rounded-2xl bg-raised text-muted">
         {icon}
       </div>

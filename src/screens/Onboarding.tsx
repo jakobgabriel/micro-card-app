@@ -9,11 +9,14 @@ import {
   Check,
   FolderOpen,
   FolderSearch,
+  Github,
   Layers,
   RefreshCcw,
   Smartphone,
   Sparkles,
 } from "lucide-react";
+
+import { GithubSetup } from "@/components/GithubSetup";
 
 import { Button, Spinner } from "@/components/ui";
 import { useToast } from "@/components/Toast";
@@ -30,6 +33,7 @@ export function Onboarding() {
   const [scanning, setScanning] = useState(false);
   const [manualPath, setManualPath] = useState("");
   const [busy, setBusy] = useState(false);
+  const [githubOpen, setGithubOpen] = useState(false);
 
   const scan = async () => {
     setScanning(true);
@@ -79,8 +83,28 @@ export function Onboarding() {
         <div className="flex flex-1 flex-col animate-fade-in">
           <h1 className="text-2xl font-black leading-tight">Where should cards live?</h1>
           <p className="mt-2 text-[15px] leading-relaxed text-muted">
-            Cards are ordinary Markdown files. Put them in your Obsidian vault and
-            both apps show the same notes.
+            Cards are ordinary Markdown files. Keep them in your Obsidian vault,
+            in a GitHub repository, or just on this phone.
+          </p>
+
+          <button
+            onClick={() => setGithubOpen(true)}
+            className="card-surface mt-5 flex w-full items-center gap-3 p-4 text-left active:scale-[.98]"
+          >
+            <div className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl bg-brand-soft text-brand">
+              <Github className="h-5 w-5" />
+            </div>
+            <div className="min-w-0 flex-1">
+              <p className="font-bold">Sync with a GitHub repository</p>
+              <p className="text-xs text-muted">
+                Every card becomes a commit, with full history
+              </p>
+            </div>
+            <ArrowRight className="h-5 w-5 shrink-0 text-muted" />
+          </button>
+
+          <p className="mt-5 px-1 text-xs font-bold uppercase tracking-wide text-muted">
+            Or use a folder on this device
           </p>
 
           <div className="mt-6 space-y-3">
@@ -160,6 +184,8 @@ export function Onboarding() {
           >
             Skip — just store cards on this phone
           </Button>
+
+          <GithubSetup open={githubOpen} onClose={() => setGithubOpen(false)} />
         </div>
       )}
     </div>
@@ -175,8 +201,8 @@ function Welcome({ onNext, onSkip }: { onNext: () => void; onSkip: () => void })
     },
     {
       icon: <FolderSearch className="h-5 w-5" />,
-      title: "Your vault, your files",
-      body: "Every card is a plain Markdown note in your own Obsidian vault.",
+      title: "Your files, your choice",
+      body: "Every card is a plain Markdown note — in your Obsidian vault, a GitHub repo, or both.",
     },
     {
       icon: <Check className="h-5 w-5" />,
@@ -187,7 +213,7 @@ function Welcome({ onNext, onSkip }: { onNext: () => void; onSkip: () => void })
 
   return (
     <div className="flex flex-1 flex-col animate-fade-in">
-      <div className="grid h-16 w-16 place-items-center rounded-3xl bg-brand text-white shadow-lift">
+      <div className="grid h-16 w-16 place-items-center rounded-3xl bg-brand text-brand-ink shadow-lift">
         <Layers className="h-8 w-8" />
       </div>
       <h1 className="mt-6 text-3xl font-black leading-[1.1]">
@@ -196,8 +222,8 @@ function Welcome({ onNext, onSkip }: { onNext: () => void; onSkip: () => void })
         want to keep.
       </h1>
       <p className="mt-3 text-[15px] leading-relaxed text-muted">
-        Micro Card turns fleeting thoughts into cards you can actually find again —
-        and keeps them in sync with Obsidian.
+        Micro Card turns fleeting thoughts into cards you can actually find
+        again — and keeps them in sync with Obsidian or a GitHub repository.
       </p>
 
       <div className="mt-8 space-y-4">
